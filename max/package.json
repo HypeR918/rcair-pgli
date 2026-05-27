@@ -13,9 +13,12 @@
   "dependencies": {
     "@maxhub/max-bot-api": "^0.2.2",
     "axios": "^1.16.1",
+    "axios-cookiejar-support": "^7.0.0",
     "dotenv": "^17.4.2",
+    "ldapts": "^8.1.8",
     "mysql2": "^3.22.3",
     "nodemailer": "^8.0.8",
-    "socks-proxy-agent": "^10.0.0"
+    "socks-proxy-agent": "^10.0.0",
+    "tough-cookie": "^6.0.1"
   }
 }
