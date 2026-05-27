@@ -5,6 +5,7 @@ import http from 'node:http';
 import fs from 'node:fs';
 import { wrapper } from 'axios-cookiejar-support';
 import { CookieJar } from 'tough-cookie';
+// import nodemailer from 'nodemailer';
 import 'dotenv/config';
 
 const bot = new Bot(process.env.BOT_TOKEN);
@@ -30,23 +31,26 @@ const glpiClient = axios.create({
   timeout: 15000
 });
 
+let glpiSessionToken = null;
+
+const glpiWebUrl = process.env.GLPI_WEB_URL ||
+  (process.env.GLPI_API_URL ? process.env.GLPI_API_URL.replace(/\/apirest\.php\/?$/, '') : '');
+const glpiCookieJar = new CookieJar();
 const glpiWebClient = wrapper(axios.create({
-  baseURL: process.env.GLPI_WEB_URL || process.env.GLPI_API_URL.replace('/apirest.php', ''),
-  jar: new CookieJar(),
+  baseURL: glpiWebUrl,
+  jar: glpiCookieJar,
   withCredentials: true,
-  timeout: 30000,
-  maxRedirects: 5,
+  timeout: 15000,
   headers: {
-    'User-Agent': 'Mozilla/5.0'
+    'User-Agent': 'MAX-SDS-bot/1.0'
   }
 }));
-
-let glpiSessionToken = null;
 
 const State = {
   IDLE: 'IDLE',
   WAIT_UNLOCK_EMAIL: 'WAIT_UNLOCK_EMAIL',
   WAIT_NEW_USER_EMAIL: 'WAIT_NEW_USER_EMAIL',
+  // WAIT_EMAIL_VERIFICATION_CODE: 'WAIT_EMAIL_VERIFICATION_CODE',
   WAIT_SDS_ORG: 'WAIT_SDS_ORG',
   WAIT_SDS_DEPT: 'WAIT_SDS_DEPT',
   WAIT_SDS_FIO: 'WAIT_SDS_FIO',
@@ -57,6 +61,55 @@ const State = {
 };
 
 const sessions = new Map();
+
+/*
+// Email verification is disabled for now.
+// To enable it:
+// 1. Uncomment the nodemailer import above.
+// 2. Uncomment State.WAIT_EMAIL_VERIFICATION_CODE above.
+// 3. In WAIT_UNLOCK_EMAIL and WAIT_NEW_USER_EMAIL handlers, replace
+//    proceedAfterVerification(ctx, text) with startEmailVerification(ctx, text).
+// 4. Uncomment the WAIT_EMAIL_VERIFICATION_CODE handler below.
+
+const emailTransporter = nodemailer.createTransport({
+  host: process.env.SMTP_HOST,
+  port: Number(process.env.SMTP_PORT || 465),
+  secure: String(process.env.SMTP_PORT || '465') === '465',
+  auth: {
+    user: process.env.SMTP_USER,
+    pass: process.env.SMTP_PASS
+  }
+});
+
+function generateEmailVerificationCode() {
+  return String(Math.floor(100000 + Math.random() * 900000));
+}
+
+async function sendEmailVerificationCode(email, code) {
+  await emailTransporter.sendMail({
+    from: process.env.SMTP_FROM || process.env.SMTP_USER,
+    to: email,
+    subject: 'Код подтверждения email',
+    text: `Ваш код подтверждения: ${code}`
+  });
+}
+
+async function startEmailVerification(ctx, email) {
+  const maxUserId = ctx.user.user_id;
+  const code = generateEmailVerificationCode();
+
+  sessions.set(maxUserId, {
+    state: State.WAIT_EMAIL_VERIFICATION_CODE,
+    verificationEmail: email,
+    verificationCode: code,
+    verificationAttempts: 0,
+    verificationExpiresAt: Date.now() + 10 * 60 * 1000
+  });
+
+  await sendEmailVerificationCode(email, code);
+  await ctx.reply('Код подтверждения отправлен на email. Введите код из письма:');
+}
+*/
 
 async function ensureDatabaseSchema() {
   const queries = [
@@ -376,7 +429,16 @@ async function importUserFromSdsViaGlpi(email) {
   console.log('=== IMPORT START for email:', email, '===');
 
   const prefix = email.split('@')[0];
-  let [existingRows] = await pool.execute(
+  const [emailRowsBefore] = await pool.execute(
+    'SELECT users_id AS id FROM glpi_useremails WHERE email = ? LIMIT 1',
+    [email]
+  );
+  if (emailRowsBefore.length > 0) {
+    console.log('=== USER ALREADY EXISTS IN DB BY EMAIL, id:', emailRowsBefore[0].id, '===');
+    return { id: emailRowsBefore[0].id };
+  }
+
+  const [existingRows] = await pool.execute(
     'SELECT id FROM glpi_users WHERE name = ? LIMIT 1',
     [prefix]
   );
@@ -386,14 +448,12 @@ async function importUserFromSdsViaGlpi(email) {
   }
 
   const search = await searchUserInLdapViaGlpi(email);
-  console.log('=== SEARCH RESULT:', JSON.stringify(search, null, 2), '===');
+  console.log('=== GLPI LDAP SEARCH RESULT:', JSON.stringify(search, null, 2), '===');
 
   if (!search.found) {
-    console.log('=== USER NOT FOUND IN SDS ===');
+    console.log('=== USER NOT FOUND IN SDS VIA GLPI LDAP FORM ===');
     return null;
   }
-
-  console.log('=== FOUND USER, starting import ===');
 
   const imported = await importFoundUserViaGlpi(
     search.samaccountname,
@@ -416,14 +476,14 @@ async function importUserFromSdsViaGlpi(email) {
     return { id: rows[0].id };
   }
 
-  const [emailRows] = await pool.execute(
+  const [emailRowsAfter] = await pool.execute(
     'SELECT users_id AS id FROM glpi_useremails WHERE email = ? LIMIT 1',
     [email]
   );
 
-  if (emailRows.length > 0) {
-    console.log('=== USER ID (via email):', emailRows[0].id, '===');
-    return { id: emailRows[0].id };
+  if (emailRowsAfter.length > 0) {
+    console.log('=== USER ID (via email):', emailRowsAfter[0].id, '===');
+    return { id: emailRowsAfter[0].id };
   }
 
   const [recent] = await pool.execute(
@@ -571,6 +631,7 @@ bot.on('message_created', async (ctx) => {
       }
       session.state = State.IDLE;
       sessions.set(maxUserId, session);
+      // await startEmailVerification(ctx, text);
       await proceedAfterVerification(ctx, text);
     } else if (session.state === State.WAIT_NEW_USER_EMAIL) {
       if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(text)) {
@@ -579,7 +640,37 @@ bot.on('message_created', async (ctx) => {
       }
       session.state = State.IDLE;
       sessions.set(maxUserId, session);
+      // await startEmailVerification(ctx, text);
       await proceedAfterVerification(ctx, text);
+    /*
+    } else if (session.state === State.WAIT_EMAIL_VERIFICATION_CODE) {
+      if (Date.now() > session.verificationExpiresAt) {
+        sessions.set(maxUserId, { state: State.WAIT_NEW_USER_EMAIL });
+        await ctx.reply('Срок действия кода истек. Введите email заново:');
+        return;
+      }
+
+      if (text !== session.verificationCode) {
+        session.verificationAttempts = (session.verificationAttempts || 0) + 1;
+
+        if (session.verificationAttempts >= 2) {
+          await blockMaxId(maxUserId);
+          sessions.delete(maxUserId);
+          await ctx.reply('Код введен неверно два раза. Ваш MAX ID заблокирован.');
+          return;
+        }
+
+        sessions.set(maxUserId, session);
+        await ctx.reply('Код неверный. Попробуйте еще раз:');
+        return;
+      }
+
+      await unblockMaxId(maxUserId);
+      const verifiedEmail = session.verificationEmail;
+      session.state = State.IDLE;
+      sessions.set(maxUserId, session);
+      await proceedAfterVerification(ctx, verifiedEmail);
+    */
     } else if (session.state === State.WAIT_SDS_ORG) {
       session.sdsData.org = text;
       session.state = State.WAIT_SDS_DEPT;
