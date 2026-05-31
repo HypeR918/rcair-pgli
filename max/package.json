@@ -4,6 +4,8 @@
   "description": "",
   "main": "bot.js",
   "scripts": {
+    "start": "node bot.js",
+    "start:importer": "node glpi-importer.js",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
