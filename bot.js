@@ -37,6 +37,9 @@ const State = {
 
 const sessions = new Map();
 
+const EMAIL_VERIFICATION_ENABLED =
+  String(process.env.EMAIL_VERIFICATION_ENABLED || 'true').toLowerCase() === 'true';
+
 const emailTransporter = nodemailer.createTransport({
   host: process.env.SMTP_HOST,
   port: Number(process.env.SMTP_PORT || 465),
@@ -59,6 +62,10 @@ function isValidEmail(value) {
   );
 }
 
+function sleep(ms) {
+  return new Promise(resolve => setTimeout(resolve, ms));
+}
+
 function generateEmailVerificationCode() {
   return String(Math.floor(100000 + Math.random() * 900000));
 }
@@ -72,7 +79,7 @@ async function sendEmailVerificationCode(email, code) {
   });
 }
 
-async function startEmailVerification(ctx, email, afterSuccessState = State.IDLE) {
+async function startEmailVerification(ctx, email, flow) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(email);
   const code = generateEmailVerificationCode();
@@ -83,7 +90,7 @@ async function startEmailVerification(ctx, email, afterSuccessState = State.IDLE
     verificationCode: code,
     verificationAttempts: 0,
     verificationExpiresAt: Date.now() + 10 * 60 * 1000,
-    afterSuccessState,
+    verificationFlow: flow,
   });
 
   await sendEmailVerificationCode(normalizedEmail, code);
@@ -102,24 +109,36 @@ async function ensureDatabaseSchema() {
 
     `CREATE TABLE IF NOT EXISTS sds_requests (
       id INT AUTO_INCREMENT PRIMARY KEY,
-      max_id BIGINT,
-      email VARCHAR(255),
+      max_id BIGINT NOT NULL,
+      email VARCHAR(255) NOT NULL,
       org VARCHAR(255),
       dept VARCHAR(255),
       fio VARCHAR(255),
       position VARCHAR(255),
       phone VARCHAR(255),
       issue TEXT,
+      glpi_ticket_id INT DEFAULT NULL,
+      glpi_ticket_status INT DEFAULT NULL,
       status VARCHAR(50) DEFAULT 'PENDING',
-      created_at DATETIME DEFAULT CURRENT_TIMESTAMP
+      decision_text TEXT DEFAULT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      decided_at DATETIME DEFAULT NULL
     )`,
+
+    'ALTER TABLE sds_requests ADD COLUMN glpi_ticket_id INT DEFAULT NULL',
+    'ALTER TABLE sds_requests ADD COLUMN glpi_ticket_status INT DEFAULT NULL',
+    'ALTER TABLE sds_requests ADD COLUMN decision_text TEXT DEFAULT NULL',
+    'ALTER TABLE sds_requests ADD COLUMN decided_at DATETIME DEFAULT NULL',
   ];
 
   for (const sql of queries) {
     try {
       await pool.execute(sql);
     } catch (err) {
-      if (err.code !== 'ER_DUP_FIELDNAME' && err.code !== 'ER_TABLE_EXISTS_ERROR') {
+      if (
+        err.code !== 'ER_DUP_FIELDNAME' &&
+        err.code !== 'ER_TABLE_EXISTS_ERROR'
+      ) {
         console.error('DB schema error:', err.message);
       }
     }
@@ -174,7 +193,6 @@ async function findGlpiUserByMaxId(maxUserId) {
 
   return rows[0] || null;
 }
-
 
 async function findGlpiUserAfterSdsImport(email) {
   const normalizedEmail = normalizeEmail(email);
@@ -241,12 +259,10 @@ async function requestGlpiLdapImport(email) {
     console.error('=== GLPI CLI IMPORT FAILED ===');
     console.error('status:', res.status);
     console.error('data:', res.data);
-
     return false;
   } catch (err) {
     console.error('=== GLPI CLI IMPORT REQUEST ERROR ===');
     console.error(err.message);
-
     return false;
   }
 }
@@ -270,7 +286,7 @@ async function importUserFromSdsViaGlpi(email) {
   const delayMs = Number(process.env.GLPI_IMPORT_CHECK_DELAY_MS || 1500);
 
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    await new Promise(resolve => setTimeout(resolve, delayMs));
+    await sleep(delayMs);
 
     const user = await findGlpiUserAfterSdsImport(normalizedEmail);
 
@@ -278,7 +294,6 @@ async function importUserFromSdsViaGlpi(email) {
       console.log('=== USER FOUND AFTER SDS IMPORT ===');
       console.log('user id:', user.id);
       console.log('attempt:', attempt);
-
       return user;
     }
   }
@@ -288,7 +303,7 @@ async function importUserFromSdsViaGlpi(email) {
 }
 
 async function createSdsRequest(maxUserId, email, data) {
-  await pool.execute(
+  const [result] = await pool.execute(
     `INSERT INTO sds_requests
       (max_id, email, org, dept, fio, position, phone, issue, status)
      VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
@@ -303,6 +318,340 @@ async function createSdsRequest(maxUserId, email, data) {
       data.issue,
     ]
   );
+
+  return result.insertId;
+}
+
+async function updateSdsRequestGlpiTicketId(requestId, glpiTicketId) {
+  await pool.execute(
+    `UPDATE sds_requests
+     SET glpi_ticket_id = ?
+     WHERE id = ?`,
+    [glpiTicketId, requestId]
+  );
+}
+
+function getGlpiApiBaseUrl() {
+  const url = String(process.env.GLPI_API_URL || '').trim();
+
+  if (!url) {
+    throw new Error('GLPI_API_URL is not configured');
+  }
+
+  return url.replace(/\/+$/, '');
+}
+
+function getGlpiApiHeaders(sessionToken) {
+  const headers = {
+    'Content-Type': 'application/json',
+  };
+
+  if (sessionToken) {
+    headers['Session-Token'] = sessionToken;
+  }
+
+  if (process.env.GLPI_API_APP_TOKEN) {
+    headers['App-Token'] = process.env.GLPI_API_APP_TOKEN;
+  }
+
+  return headers;
+}
+
+async function glpiInitSession() {
+  if (!process.env.GLPI_API_USER_TOKEN) {
+    throw new Error('GLPI_API_USER_TOKEN is not configured');
+  }
+
+  const baseUrl = getGlpiApiBaseUrl();
+
+  const res = await axios.get(`${baseUrl}/initSession`, {
+    headers: {
+      ...getGlpiApiHeaders(),
+      Authorization: `user_token ${process.env.GLPI_API_USER_TOKEN}`,
+    },
+    validateStatus: () => true,
+  });
+
+  if (res.status < 200 || res.status >= 300 || !res.data?.session_token) {
+    console.error('GLPI initSession failed:', res.status, res.data);
+    throw new Error('GLPI initSession failed');
+  }
+
+  return res.data.session_token;
+}
+
+async function glpiKillSession(sessionToken) {
+  if (!sessionToken) return;
+
+  try {
+    const baseUrl = getGlpiApiBaseUrl();
+
+    await axios.get(`${baseUrl}/killSession`, {
+      headers: getGlpiApiHeaders(sessionToken),
+      validateStatus: () => true,
+    });
+  } catch (err) {
+    console.error('GLPI killSession error:', err.message);
+  }
+}
+
+async function glpiApiRequest(method, path, data = null) {
+  const sessionToken = await glpiInitSession();
+
+  try {
+    const baseUrl = getGlpiApiBaseUrl();
+    const lowerMethod = method.toLowerCase();
+
+    const needsWriteSession = ['post', 'put', 'patch', 'delete'].includes(lowerMethod);
+    const separator = path.includes('?') ? '&' : '?';
+    const finalPath = needsWriteSession
+      ? `${path}${separator}session_write=true`
+      : path;
+
+    const config = {
+      method,
+      url: `${baseUrl}${finalPath}`,
+      headers: getGlpiApiHeaders(sessionToken),
+      validateStatus: () => true,
+    };
+
+    // ВАЖНО:
+    // GLPI запрещает body у GET-запросов.
+    // Поэтому data добавляем только для POST/PUT/PATCH/DELETE.
+    if (data !== null && data !== undefined && lowerMethod !== 'get') {
+      config.data = data;
+    }
+
+    const res = await axios(config);
+
+    if (res.status < 200 || res.status >= 300) {
+      console.error('GLPI API request failed:', method, finalPath, res.status, res.data);
+      throw new Error(`GLPI API request failed: ${res.status}`);
+    }
+
+    return res.data;
+  } finally {
+    await glpiKillSession(sessionToken);
+  }
+}
+
+function buildRegistrationTicketContent(maxUserId, email, data) {
+  return [
+    'Пользователь не найден в SDS-helpdesk после проверки через LDAP/GLPI.',
+    '',
+    `Email: ${email}`,
+    `MAX ID: ${maxUserId}`,
+    '',
+    `Организация: ${data.org || '-'}`,
+    `Подразделение: ${data.dept || '-'}`,
+    `ФИО: ${data.fio || '-'}`,
+    `Должность: ${data.position || '-'}`,
+    `Телефон: ${data.phone || '-'}`,
+    '',
+    'Содержание обращения:',
+    data.issue || '-',
+    '',
+    'Формат решения:',
+    'ПОДТВЕРДИТЬ - пользователь создан / доступ разрешен',
+    'ОТКАЗАТЬ - отказано, указать причину',
+    '',
+    'Примеры решения:',
+    '',
+    'ПОДТВЕРДИТЬ',
+    'Пользователь создан в SDS и добавлен в группу helpdesk.',
+    '',
+    'или',
+    '',
+    'ОТКАЗАТЬ',
+    'Недостаточно данных для идентификации пользователя.',
+  ].join('\n');
+}
+
+async function createGlpiRegistrationTicket(maxUserId, email, data) {
+  const entityId = Number(process.env.GLPI_ENTITY_ID || 0);
+
+  const ticketPayload = {
+    input: {
+      name: `Регистрация пользователя в SDS-helpdesk: ${data.fio || email}`,
+      content: buildRegistrationTicketContent(maxUserId, email, data),
+      entities_id: entityId,
+      type: 2,
+      urgency: 3,
+      impact: 3,
+      priority: 3,
+    },
+  };
+
+  const result = await glpiApiRequest('post', '/Ticket', ticketPayload);
+
+  if (!result?.id) {
+    console.error('GLPI Ticket create unexpected response:', result);
+    throw new Error('GLPI ticket was not created');
+  }
+
+  return result.id;
+}
+
+function stripHtml(value) {
+  return String(value || '')
+    .replace(/<br\s*\/?>/gi, '\n')
+    .replace(/<\/p>/gi, '\n')
+    .replace(/<[^>]+>/g, '')
+    .replace(/&nbsp;/g, ' ')
+    .replace(/&amp;/g, '&')
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .trim();
+}
+
+function parseDecisionText(text) {
+  const normalized = stripHtml(text).trim();
+
+  if (!normalized) {
+    return null;
+  }
+
+  const lines = normalized
+    .split('\n')
+    .map(line => line.trim())
+    .filter(Boolean);
+
+  const firstLineUpper = String(lines[0] || '').toUpperCase();
+  const fullUpper = normalized.toUpperCase();
+
+  if (
+    firstLineUpper.includes('ПОДТВЕРДИТЬ') ||
+    firstLineUpper.includes('ПОДТВЕРЖДЕНО') ||
+    firstLineUpper.includes('ПОДТВЕРЖДАЮ') ||
+    firstLineUpper.includes('ОДОБРЕНО') ||
+    firstLineUpper.includes('ОДОБРИТЬ') ||
+    firstLineUpper.includes('СОГЛАСОВАНО') ||
+    firstLineUpper.includes('СОГЛАСОВАТЬ')
+  ) {
+    return {
+      status: 'APPROVED',
+      text: normalized,
+    };
+  }
+
+  if (
+    firstLineUpper.includes('ОТКАЗАТЬ') ||
+    firstLineUpper.includes('ОТКАЗАНО') ||
+    firstLineUpper.includes('ОТКАЗ') ||
+    firstLineUpper.includes('ОТКЛОНЕНО') ||
+    firstLineUpper.includes('ОТКЛОНИТЬ')
+  ) {
+    return {
+      status: 'REJECTED',
+      text: normalized,
+    };
+  }
+
+  if (fullUpper.includes('APPROVED')) {
+    return {
+      status: 'APPROVED',
+      text: normalized,
+    };
+  }
+
+  if (fullUpper.includes('REJECTED')) {
+    return {
+      status: 'REJECTED',
+      text: normalized,
+    };
+  }
+
+  return null;
+}
+
+async function getGlpiTicket(ticketId) {
+  return await glpiApiRequest('get', `/Ticket/${ticketId}`);
+}
+
+async function getGlpiTicketSolutions(ticketId) {
+  try {
+    const result = await glpiApiRequest('get', `/Ticket/${ticketId}/ITILSolution`);
+
+    if (Array.isArray(result)) {
+      return result;
+    }
+
+    return [];
+  } catch (err) {
+    console.error('getGlpiTicketSolutions error:', err.message);
+    return [];
+  }
+}
+
+async function getGlpiTicketFollowups(ticketId) {
+  try {
+    const result = await glpiApiRequest('get', `/Ticket/${ticketId}/ITILFollowup`);
+
+    if (Array.isArray(result)) {
+      return result;
+    }
+
+    return [];
+  } catch (err) {
+    console.error('getGlpiTicketFollowups error:', err.message);
+    return [];
+  }
+}
+
+async function getTicketDecision(ticketId) {
+  const ticket = await getGlpiTicket(ticketId);
+  const ticketStatus = Number(ticket.status || 0);
+
+  const isFinalStatus = ticketStatus === 5 || ticketStatus === 6;
+
+  if (!isFinalStatus) {
+    return {
+      isFinal: false,
+      ticketStatus,
+      decision: null,
+    };
+  }
+
+  const solutions = await getGlpiTicketSolutions(ticketId);
+
+  for (const solution of [...solutions].reverse()) {
+    const decision = parseDecisionText(
+      solution.content ||
+      solution.solution ||
+      solution.name ||
+      ''
+    );
+
+    if (decision) {
+      return {
+        isFinal: true,
+        ticketStatus,
+        decision,
+      };
+    }
+  }
+
+  const followups = await getGlpiTicketFollowups(ticketId);
+
+  for (const followup of [...followups].reverse()) {
+    const decision = parseDecisionText(followup.content || '');
+
+    if (decision) {
+      return {
+        isFinal: true,
+        ticketStatus,
+        decision,
+      };
+    }
+  }
+
+  const fallbackDecision = parseDecisionText(ticket.content || '');
+
+  return {
+    isFinal: true,
+    ticketStatus,
+    decision: fallbackDecision,
+  };
 }
 
 const mainMenuKeyboard = () =>
@@ -399,6 +748,175 @@ async function entryPoint(ctx) {
   }
 }
 
+async function handleEmailInput(ctx, email, flow) {
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!isValidEmail(normalizedEmail)) {
+    await ctx.reply('Некорректный формат email. Попробуйте снова:');
+    return;
+  }
+
+  if (EMAIL_VERIFICATION_ENABLED) {
+    await startEmailVerification(ctx, normalizedEmail, flow);
+    return;
+  }
+
+  sessions.set(ctx.user.user_id, {
+    state: State.IDLE,
+  });
+
+  await proceedAfterVerification(ctx, normalizedEmail);
+}
+
+async function handleApprovedSdsRequest(request) {
+  const maxUserId = request.max_id;
+  const email = normalizeEmail(request.email);
+
+  await pool.execute(
+    `UPDATE sds_requests
+     SET status = 'APPROVED',
+         decision_text = ?,
+         glpi_ticket_status = ?,
+         decided_at = NOW()
+     WHERE id = ?`,
+    [
+      request.decision_text || 'ПОДТВЕРДИТЬ',
+      request.glpi_ticket_status || null,
+      request.id,
+    ]
+  );
+
+  await bot.api.sendMessageToUser(
+    maxUserId,
+    'Заявка подтверждена. Проверяю учетную запись в SDS-helpdesk.'
+  );
+
+  const importResult = await importUserFromSdsViaGlpi(email);
+
+  if (importResult && importResult.id) {
+    await linkMaxIdToGlpiUser(importResult.id, maxUserId);
+
+    const user = await findGlpiUserByMaxId(maxUserId);
+
+    if (user) {
+      const fakeCtx = {
+        user: { user_id: maxUserId },
+        reply: (text, options) => bot.api.sendMessageToUser(maxUserId, text, options),
+      };
+
+      await bot.api.sendMessageToUser(
+        maxUserId,
+        'Учетная запись найдена и успешно привязана.'
+      );
+
+      await showWelcomeAndMenu(fakeCtx, user);
+      return;
+    }
+  }
+
+  await bot.api.sendMessageToUser(
+    maxUserId,
+    'Заявка подтверждена, но учетная запись пока не найдена в SDS-helpdesk. Обратитесь к администратору.'
+  );
+}
+
+async function handleRejectedSdsRequest(request) {
+  const maxUserId = request.max_id;
+
+  await pool.execute(
+    `UPDATE sds_requests
+     SET status = 'REJECTED',
+         decision_text = ?,
+         glpi_ticket_status = ?,
+         decided_at = NOW()
+     WHERE id = ?`,
+    [
+      request.decision_text || 'ОТКАЗАТЬ',
+      request.glpi_ticket_status || null,
+      request.id,
+    ]
+  );
+
+  sessions.delete(maxUserId);
+
+  await bot.api.sendMessageToUser(
+    maxUserId,
+    `По заявке получен отказ.\n\n${request.decision_text || 'Причина отказа не указана.'}`
+  );
+}
+
+let approvalPollingInProgress = false;
+
+async function pollPendingSdsRequests() {
+  if (approvalPollingInProgress) {
+    return;
+  }
+
+  approvalPollingInProgress = true;
+
+  try {
+    const [requests] = await pool.execute(
+      `SELECT id, max_id, email, glpi_ticket_id
+       FROM sds_requests
+       WHERE status = 'PENDING'
+         AND glpi_ticket_id IS NOT NULL
+       ORDER BY id ASC
+       LIMIT 20`
+    );
+
+    for (const request of requests) {
+      try {
+        const result = await getTicketDecision(request.glpi_ticket_id);
+
+        await pool.execute(
+          `UPDATE sds_requests
+           SET glpi_ticket_status = ?
+           WHERE id = ?`,
+          [result.ticketStatus || null, request.id]
+        );
+
+        if (!result.isFinal) {
+          continue;
+        }
+
+        if (!result.decision) {
+          console.log(
+            'Ticket is final but decision is not recognized:',
+            request.glpi_ticket_id
+          );
+          continue;
+        }
+
+        const enrichedRequest = {
+          ...request,
+          glpi_ticket_status: result.ticketStatus,
+          decision_text: result.decision.text,
+        };
+
+        if (result.decision.status === 'APPROVED') {
+          await handleApprovedSdsRequest(enrichedRequest);
+          continue;
+        }
+
+        if (result.decision.status === 'REJECTED') {
+          await handleRejectedSdsRequest(enrichedRequest);
+          continue;
+        }
+      } catch (err) {
+        console.error(
+          'pollPendingSdsRequests item error:',
+          request.glpi_ticket_id,
+          err.message
+        );
+      }
+    }
+  } catch (err) {
+    console.error('pollPendingSdsRequests error:', err.message);
+  } finally {
+    approvalPollingInProgress = false;
+  }
+}
+
 bot.on('bot_started', async ctx => {
   await entryPoint(ctx);
 });
@@ -420,26 +938,12 @@ bot.on('message_created', async ctx => {
 
   try {
     if (session.state === State.WAIT_UNLOCK_EMAIL) {
-      const email = normalizeEmail(text);
-
-      if (!isValidEmail(email)) {
-        await ctx.reply('Некорректный формат email. Попробуйте снова:');
-        return;
-      }
-
-      await startEmailVerification(ctx, email, State.WAIT_UNLOCK_EMAIL);
+      await handleEmailInput(ctx, text, State.WAIT_UNLOCK_EMAIL);
       return;
     }
 
     if (session.state === State.WAIT_NEW_USER_EMAIL) {
-      const email = normalizeEmail(text);
-
-      if (!isValidEmail(email)) {
-        await ctx.reply('Некорректный формат email. Попробуйте снова:');
-        return;
-      }
-
-      await startEmailVerification(ctx, email, State.WAIT_NEW_USER_EMAIL);
+      await handleEmailInput(ctx, text, State.WAIT_NEW_USER_EMAIL);
       return;
     }
 
@@ -447,7 +951,7 @@ bot.on('message_created', async ctx => {
       if (Date.now() > session.verificationExpiresAt) {
         sessions.set(maxUserId, {
           state:
-            session.afterSuccessState === State.WAIT_UNLOCK_EMAIL
+            session.verificationFlow === State.WAIT_UNLOCK_EMAIL
               ? State.WAIT_UNLOCK_EMAIL
               : State.WAIT_NEW_USER_EMAIL,
         });
@@ -474,7 +978,7 @@ bot.on('message_created', async ctx => {
       }
 
       const verifiedEmail = session.verificationEmail;
-      const wasUnlockFlow = session.afterSuccessState === State.WAIT_UNLOCK_EMAIL;
+      const wasUnlockFlow = session.verificationFlow === State.WAIT_UNLOCK_EMAIL;
 
       if (wasUnlockFlow) {
         await unblockMaxId(maxUserId);
@@ -537,13 +1041,29 @@ bot.on('message_created', async ctx => {
     if (session.state === State.WAIT_SDS_ISSUE) {
       session.sdsData.issue = text;
 
-      await createSdsRequest(maxUserId, session.verifiedEmail, session.sdsData);
+      await ctx.reply('Создаю заявку в SDS-helpdesk для администраторов...');
+
+      const localRequestId = await createSdsRequest(
+        maxUserId,
+        session.verifiedEmail,
+        session.sdsData
+      );
+
+      const glpiTicketId = await createGlpiRegistrationTicket(
+        maxUserId,
+        session.verifiedEmail,
+        session.sdsData
+      );
+
+      await updateSdsRequestGlpiTicketId(localRequestId, glpiTicketId);
 
       session.state = State.WAIT_SDS_APPROVAL;
+      session.sdsRequestId = localRequestId;
+      session.glpiTicketId = glpiTicketId;
       sessions.set(maxUserId, session);
 
-      await ctx.reply('Данные переданы администраторам. С вами свяжутся.');
-      await ctx.reply('Ожидайте подтверждения заявки на добавление в SDS-helpdesk.');
+      await ctx.reply(`Заявка №${glpiTicketId} создана и передана администраторам.`);
+      await ctx.reply('Ожидайте решения по заявке. Я пришлю уведомление после обработки.');
       return;
     }
 
@@ -580,6 +1100,12 @@ bot.action('menu:logout', async ctx => {
 });
 
 const webhookServer = http.createServer(async (req, res) => {
+  if (req.method === 'GET' && req.url === '/health') {
+    res.writeHead(200, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.end(JSON.stringify({ ok: true, service: 'max-bot' }));
+    return;
+  }
+
   if (req.method !== 'POST' || req.url !== '/webhook/sds-approval') {
     res.writeHead(404);
     res.end('Not found');
@@ -600,7 +1126,26 @@ const webhookServer = http.createServer(async (req, res) => {
     try {
       const payload = JSON.parse(body);
       const maxUserId = Number(payload.maxUserId);
-      const status = String(payload.status || '').toUpperCase();
+      const statusRaw = String(payload.status || '').toUpperCase();
+
+      let status = statusRaw;
+
+      if (
+        statusRaw === 'ПОДТВЕРДИТЬ' ||
+        statusRaw === 'ПОДТВЕРЖДЕНО' ||
+        statusRaw === 'ОДОБРЕНО' ||
+        statusRaw === 'СОГЛАСОВАНО'
+      ) {
+        status = 'APPROVED';
+      }
+
+      if (
+        statusRaw === 'ОТКАЗАТЬ' ||
+        statusRaw === 'ОТКАЗАНО' ||
+        statusRaw === 'ОТКЛОНЕНО'
+      ) {
+        status = 'REJECTED';
+      }
 
       if (!maxUserId || !['APPROVED', 'REJECTED'].includes(status)) {
         res.writeHead(400);
@@ -609,7 +1154,7 @@ const webhookServer = http.createServer(async (req, res) => {
       }
 
       const [requests] = await pool.execute(
-        `SELECT id, email
+        `SELECT id, max_id, email, glpi_ticket_id
          FROM sds_requests
          WHERE max_id = ?
            AND status = 'PENDING'
@@ -624,54 +1169,16 @@ const webhookServer = http.createServer(async (req, res) => {
         return;
       }
 
-      await pool.execute(
-        `UPDATE sds_requests
-         SET status = ?
-         WHERE id = ?`,
-        [status === 'APPROVED' ? 'APPROVED' : 'REJECTED', requests[0].id]
-      );
+      const request = {
+        ...requests[0],
+        glpi_ticket_status: null,
+        decision_text: status === 'APPROVED' ? 'ПОДТВЕРДИТЬ' : 'ОТКАЗАТЬ',
+      };
 
       if (status === 'APPROVED') {
-        const email = normalizeEmail(requests[0].email);
-
-        await bot.api.sendMessageToUser(
-          maxUserId,
-          'Заявка одобрена. Проверяю создание учетной записи в SDS-helpdesk.'
-        );
-
-        const importResult = await importUserFromSdsViaGlpi(email);
-
-        if (importResult && importResult.id) {
-          await linkMaxIdToGlpiUser(importResult.id, maxUserId);
-        }
-
-        const user = await findGlpiUserByMaxId(maxUserId);
-
-        if (user) {
-          const fakeCtx = {
-            user: { user_id: maxUserId },
-            reply: (text, options) => bot.api.sendMessageToUser(maxUserId, text, options),
-          };
-
-          await bot.api.sendMessageToUser(
-            maxUserId,
-            'Учетная запись создана и привязана.'
-          );
-
-          await showWelcomeAndMenu(fakeCtx, user);
-        } else {
-          await bot.api.sendMessageToUser(
-            maxUserId,
-            'Заявка одобрена, но учетная запись пока не найдена в SDS-helpdesk. Обратитесь к администратору.'
-          );
-        }
+        await handleApprovedSdsRequest(request);
       } else {
-        sessions.delete(maxUserId);
-
-        await bot.api.sendMessageToUser(
-          maxUserId,
-          'Заявка отклонена. Обратитесь к администратору.'
-        );
+        await handleRejectedSdsRequest(request);
       }
 
       res.writeHead(200);
@@ -690,15 +1197,33 @@ async function startApp() {
 
   bot.start();
 
+  const pollMs = Number(process.env.GLPI_APPROVAL_POLL_MS || 60000);
+
+  setInterval(() => {
+    pollPendingSdsRequests().catch(err => {
+      console.error('approval polling fatal error:', err.message);
+    });
+  }, pollMs);
+
+  pollPendingSdsRequests().catch(err => {
+    console.error('approval polling startup error:', err.message);
+  });
+
   webhookServer.listen(PORT, () => {
     console.log(`Бот запущен. Webhook: http://localhost:${PORT}/webhook/sds-approval`);
+    console.log(`Healthcheck: http://localhost:${PORT}/health`);
+    console.log('GLPI approval polling interval:', pollMs, 'ms');
+    console.log('Email verification enabled:', EMAIL_VERIFICATION_ENABLED);
   });
 }
 
 startApp();
 
-process.on('SIGINT', async () => {
+async function shutdown() {
   console.log('Завершение работы...');
   await pool.end();
   process.exit(0);
-});
+}
+
+process.on('SIGINT', shutdown);
+process.on('SIGTERM', shutdown);
