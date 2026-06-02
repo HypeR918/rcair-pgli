@@ -14,9 +14,18 @@ import {
   handleTicketTextState,
 } from './ticketController.js';
 
+function hasIncomingAttachments(ctx) {
+  const attachments =
+    ctx.message?.body?.attachments ||
+    ctx.message?.attachments ||
+    ctx.message?.body?.message?.attachments ||
+    [];
+
+  return Array.isArray(attachments) && attachments.length > 0;
+}
+
 export function registerMessageHandler(bot) {
   bot.on('message_created', async ctx => {
-    if (!ctx.message || !ctx.message.body || !ctx.message.body.text) return;
     if (!ctx.user || !ctx.user.user_id) return;
 
     const maxUserId = ctx.user.user_id;
@@ -24,7 +33,10 @@ export function registerMessageHandler(bot) {
 
     if (!session) return;
 
-    const text = ctx.message.body.text.trim();
+    const text = String(ctx.message?.body?.text || '').trim();
+    const hasFiles = hasIncomingAttachments(ctx);
+
+    if (!text && !hasFiles) return;
 
     try {
       if (session.state === State.WAIT_UNLOCK_EMAIL) {

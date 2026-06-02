@@ -19,6 +19,7 @@ import {
   updateBotUserTicketStatus,
   markTicketClosedNotified,
   resetTicketSolutionNotified,
+  forceTicketRequesterInDb,
 } from '../services/dbService.js';
 
 import {
@@ -29,36 +30,75 @@ import {
   addGlpiTicketFollowup,
   acceptGlpiTicketSolution,
   rejectGlpiTicketSolution,
+  uploadAndAttachFilesToTicket,
 } from '../services/glpiService.js';
+
+import {
+  collectDownloadedMaxAttachments,
+  cleanupDownloadedFiles,
+} from '../services/maxFileService.js';
 
 import {
   mainMenuKeyboard,
   ticketActionsKeyboard,
+  ticketListKeyboard,
 } from '../ui/keyboards.js';
 
-export async function createUserTicket(ctx, content) {
+export async function createUserTicket(ctx, title, description, files = []) {
   const maxUserId = ctx.user.user_id;
   const user = await findGlpiUserByMaxId(maxUserId);
 
   if (!user) {
+    await cleanupDownloadedFiles(files);
     await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
     return;
   }
 
-  const { ticketId, title } = await createGlpiUserTicket(
+  const { ticketId, title: ticketTitle } = await createGlpiUserTicket(
     maxUserId,
     user.id,
-    content
+    title,
+    description
   );
 
-  await saveBotUserTicket(maxUserId, user.id, ticketId, title, 1);
+  // Принудительно выставляем инициатора заявки в БД GLPI.
+  // Это заполняет оба поля:
+  // 1. glpi_tickets.users_id_recipient
+  // 2. glpi_tickets_users type = 1
+  await forceTicketRequesterInDb(ticketId, user.id);
+
+  let uploadedFiles = [];
+  let uploadError = null;
+
+  try {
+    if (files.length > 0) {
+      uploadedFiles = await uploadAndAttachFilesToTicket(ticketId, files);
+    }
+  } catch (error) {
+    uploadError = error;
+    console.error('uploadAndAttachFilesToTicket error:', error.message);
+  } finally {
+    await cleanupDownloadedFiles(files);
+  }
+
+  await saveBotUserTicket(maxUserId, user.id, ticketId, ticketTitle, 1);
 
   setSession(maxUserId, {
     state: State.IDLE,
     glpiUserId: user.id,
   });
 
-  await ctx.reply(`Заявка №${ticketId} создана.`, {
+  const parts = [`Заявка №${ticketId} создана.`];
+
+  if (uploadedFiles.length > 0) {
+    parts.push(`Вложения добавлены: ${uploadedFiles.length}.`);
+  }
+
+  if (uploadError) {
+    parts.push('Заявка создана, но часть вложений не удалось загрузить в GLPI.');
+  }
+
+  await ctx.reply(parts.join('\n'), {
     attachments: [ticketActionsKeyboard(ticketId, 1)],
   });
 }
@@ -81,7 +121,7 @@ export async function showUserTickets(ctx) {
     return;
   }
 
-  const rows = [];
+  const keyboardItems = [];
 
   for (const ticket of tickets) {
     try {
@@ -91,43 +131,22 @@ export async function showUserTickets(ctx) {
 
       await updateBotUserTicketStatus(ticket.glpi_ticket_id, status, title);
 
-      rows.push([
-        {
-          type: 'callback',
-          text: `№${ticket.glpi_ticket_id} — ${getTicketStatusLabel(status)}`,
-          payload: `ticket:open:${ticket.glpi_ticket_id}`,
-        },
-      ]);
+      keyboardItems.push({
+        ticketId: ticket.glpi_ticket_id,
+        statusLabel: getTicketStatusLabel(status),
+      });
     } catch (err) {
-      rows.push([
-        {
-          type: 'callback',
-          text: `№${ticket.glpi_ticket_id} — недоступна`,
-          payload: `ticket:open:${ticket.glpi_ticket_id}`,
-        },
-      ]);
+      console.error('showUserTickets item error:', ticket.glpi_ticket_id, err.message);
+
+      keyboardItems.push({
+        ticketId: ticket.glpi_ticket_id,
+        statusLabel: 'недоступна',
+      });
     }
   }
 
-  rows.push([
-    {
-      type: 'callback',
-      text: 'Назад',
-      payload: 'menu:back',
-    },
-  ]);
-
-  // В MAX SDK лучше использовать Keyboard, а не обычные объекты.
-  // Поэтому ниже оставляем безопасную ручную сборку через импортированный Keyboard не делаем,
-  // а используем mainMenuKeyboard только для главного меню.
-  // Если твой SDK не примет такие объекты, скажи — заменим на Keyboard.button.callback.
-  const { Keyboard } = await import('@maxhub/max-bot-api');
-  const keyboardRows = rows.map(row =>
-    row.map(btn => Keyboard.button.callback(btn.text, btn.payload))
-  );
-
   await ctx.reply('Выберите заявку:', {
-    attachments: [Keyboard.inlineKeyboard(keyboardRows)],
+    attachments: [ticketListKeyboard(keyboardItems)],
   });
 }
 
@@ -154,9 +173,10 @@ export async function showTicketDetails(ctx, ticketId) {
     .map(item => stripHtml(item.content || ''))
     .filter(Boolean);
 
-  const solutionText = status === 5 || status === 6
-    ? await getLatestTicketSolutionText(ticketId)
-    : '';
+  const solutionText =
+    status === 5 || status === 6
+      ? await getLatestTicketSolutionText(ticketId)
+      : '';
 
   const parts = [
     `Заявка №${ticketId}`,
@@ -184,11 +204,12 @@ export async function showTicketDetails(ctx, ticketId) {
   });
 }
 
-export async function addUserCommentToTicket(ctx, ticketId, commentText) {
+export async function addUserCommentToTicket(ctx, ticketId, commentText, files = []) {
   const maxUserId = ctx.user.user_id;
   const localTicket = await getBotUserTicket(maxUserId, ticketId);
 
   if (!localTicket) {
+    await cleanupDownloadedFiles(files);
     await ctx.reply('Эта заявка не найдена среди ваших заявок.');
     return;
   }
@@ -196,7 +217,7 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText) {
   const content = [
     'Комментарий пользователя из MAX:',
     '',
-    commentText,
+    commentText || 'Добавлены вложения.',
   ].join('\n');
 
   const followupId = await addGlpiTicketFollowup(ticketId, content);
@@ -205,12 +226,36 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText) {
     await markFollowupAsKnown(ticketId, followupId, content, true);
   }
 
+  let uploadedFiles = [];
+  let uploadError = null;
+
+  try {
+    if (files.length > 0) {
+      uploadedFiles = await uploadAndAttachFilesToTicket(ticketId, files);
+    }
+  } catch (error) {
+    uploadError = error;
+    console.error('uploadAndAttachFilesToTicket comment error:', error.message);
+  } finally {
+    await cleanupDownloadedFiles(files);
+  }
+
   setSession(maxUserId, {
     state: State.IDLE,
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  await ctx.reply(`Комментарий добавлен в заявку №${ticketId}.`);
+  const parts = [`Комментарий добавлен в заявку №${ticketId}.`];
+
+  if (uploadedFiles.length > 0) {
+    parts.push(`Вложения добавлены: ${uploadedFiles.length}.`);
+  }
+
+  if (uploadError) {
+    parts.push('Комментарий добавлен, но часть вложений не удалось загрузить.');
+  }
+
+  await ctx.reply(parts.join('\n'));
   await showTicketDetails(ctx, ticketId);
 }
 
@@ -264,29 +309,70 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
 export async function handleTicketTextState(ctx, session, text) {
   const maxUserId = ctx.user.user_id;
 
-  if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
+  if (session.state === State.WAIT_NEW_TICKET_TITLE) {
+    if (text.length < 3) {
+      await ctx.reply('Заголовок слишком короткий. Введите понятный заголовок заявки:');
+      return true;
+    }
+
+    session.state = State.WAIT_NEW_TICKET_DESCRIPTION;
+    session.ticketDraft = {
+      title: text,
+    };
+
+    setSession(maxUserId, session);
+
+    await ctx.reply('Теперь введите описание заявки. Можно приложить фото или файл к этому же сообщению.');
+    return true;
+  }
+
+  if (session.state === State.WAIT_NEW_TICKET_DESCRIPTION) {
+    const files = await collectDownloadedMaxAttachments(ctx);
+
     if (text.length < 5) {
+      await cleanupDownloadedFiles(files);
+      await ctx.reply('Описание слишком короткое. Опишите обращение подробнее:');
+      return true;
+    }
+
+    const title = session.ticketDraft?.title || 'Заявка из MAX';
+    const description = text;
+
+    await createUserTicket(ctx, title, description, files);
+    return true;
+  }
+
+  // Старая логика, если где-то осталась сессия WAIT_NEW_TICKET_CONTENT.
+  if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
+    const files = await collectDownloadedMaxAttachments(ctx);
+
+    if (text.length < 5) {
+      await cleanupDownloadedFiles(files);
       await ctx.reply('Опишите обращение подробнее:');
       return true;
     }
 
-    await createUserTicket(ctx, text);
+    await createUserTicket(ctx, truncateText(text, 80), text, files);
     return true;
   }
 
   if (session.state === State.WAIT_TICKET_COMMENT) {
+    const files = await collectDownloadedMaxAttachments(ctx);
+
     if (!session.ticketId) {
+      await cleanupDownloadedFiles(files);
       setSession(maxUserId, { state: State.IDLE });
       await ctx.reply('Заявка не выбрана.');
       return true;
     }
 
-    if (text.length < 2) {
-      await ctx.reply('Введите текст комментария:');
+    if (text.length < 2 && files.length === 0) {
+      await cleanupDownloadedFiles(files);
+      await ctx.reply('Введите текст комментария или приложите файл:');
       return true;
     }
 
-    await addUserCommentToTicket(ctx, session.ticketId, text);
+    await addUserCommentToTicket(ctx, session.ticketId, text, files);
     return true;
   }
 
@@ -322,11 +408,12 @@ export function registerTicketActions(bot) {
     }
 
     setSession(maxUserId, {
-      state: State.WAIT_NEW_TICKET_CONTENT,
+      state: State.WAIT_NEW_TICKET_TITLE,
       glpiUserId: user.id,
+      ticketDraft: {},
     });
 
-    await ctx.reply('Опишите обращение. Я создам заявку в SDS-helpdesk.');
+    await ctx.reply('Введите заголовок заявки:');
   });
 
   bot.action('menu:list', async ctx => {
@@ -334,6 +421,8 @@ export function registerTicketActions(bot) {
   });
 
   bot.action('menu:back', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
     const maxUserId = ctx.user.user_id;
     const user = await findGlpiUserByMaxId(maxUserId);
 
@@ -361,6 +450,7 @@ export function registerTicketActions(bot) {
         'Новая — создать заявку.',
         'Выбрать — открыть свои заявки.',
         'В заявке можно добавить комментарий, принять или отклонить решение.',
+        'При создании заявки и при комментарии можно приложить фото или файл.',
       ].join('\n')
     );
   });
@@ -396,7 +486,7 @@ export function registerTicketActions(bot) {
       glpiUserId: localTicket.glpi_user_id,
     });
 
-    await ctx.reply(`Введите комментарий для заявки №${ticketId}:`);
+    await ctx.reply(`Введите комментарий для заявки №${ticketId}. Можно приложить фото или файл.`);
   });
 
   bot.action(/^ticket:accept:(\d+)$/, async ctx => {

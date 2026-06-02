@@ -27,3 +27,16 @@ export function ticketActionsKeyboard(ticketId, status) {
 
   return Keyboard.inlineKeyboard(rows);
 }
+
+export function ticketListKeyboard(tickets) {
+  const rows = tickets.map(ticket => [
+    Keyboard.button.callback(
+      `№${ticket.ticketId} — ${ticket.statusLabel}`,
+      `ticket:open:${ticket.ticketId}`
+    ),
+  ]);
+
+  rows.push([Keyboard.button.callback('Назад', 'menu:back')]);
+
+  return Keyboard.inlineKeyboard(rows);
+}

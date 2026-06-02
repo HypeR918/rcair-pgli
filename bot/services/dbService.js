@@ -373,3 +373,40 @@ export async function isFollowupKnown(ticketId, followupId) {
 
   return rows.length > 0;
 }
+export async function forceTicketRequesterInDb(ticketId, glpiUserId) {
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await connection.execute(
+      `UPDATE glpi_tickets
+       SET users_id_recipient = ?,
+           date_mod = NOW()
+       WHERE id = ?`,
+      [glpiUserId, ticketId]
+    );
+
+    await connection.execute(
+      `DELETE FROM glpi_tickets_users
+       WHERE tickets_id = ?
+         AND type = 1`,
+      [ticketId]
+    );
+
+    await connection.execute(
+      `INSERT INTO glpi_tickets_users
+        (tickets_id, users_id, type, use_notification, alternative_email)
+       VALUES (?, ?, 1, 1, NULL)`,
+      [ticketId, glpiUserId]
+    );
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    console.error('forceTicketRequesterInDb error:', error.message);
+    throw error;
+  } finally {
+    connection.release();
+  }
+}

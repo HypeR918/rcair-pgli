@@ -4,33 +4,49 @@ import { normalizeEmail, sleep } from '../utils/textUtils.js';
 import { findGlpiUserAfterSdsImport } from './dbService.js';
 
 export async function requestGlpiLdapImport(email) {
-  if (!env.GLPI_IMPORT_URL) {
+  const importUrl = String(env.GLPI_IMPORT_URL || '').trim();
+  const importSecret = String(env.GLPI_IMPORT_SECRET || '').trim();
+  const normalizedEmail = normalizeEmail(email);
+
+  if (!importUrl) {
     console.error('GLPI_IMPORT_URL is not configured');
     return false;
   }
 
-  if (!env.GLPI_IMPORT_SECRET) {
+  if (!importSecret) {
     console.error('GLPI_IMPORT_SECRET is not configured');
     return false;
   }
 
+  const payload = JSON.stringify({
+    email: normalizedEmail,
+  });
+
   try {
+    console.log('=== GLPI CLI IMPORT REQUEST ===');
+    console.log('url:', importUrl);
+    console.log('email:', normalizedEmail);
+    console.log('payload:', payload);
+    console.log('secret length:', importSecret.length);
+
     const res = await axios.post(
-      env.GLPI_IMPORT_URL,
-      { email },
+      importUrl,
+      payload,
       {
         headers: {
-          Authorization: `Bearer ${env.GLPI_IMPORT_SECRET}`,
+          Authorization: `Bearer ${importSecret}`,
           'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(payload, 'utf8'),
         },
         timeout: env.GLPI_IMPORT_TIMEOUT_MS,
         validateStatus: () => true,
+        transformRequest: data => data,
       }
     );
 
     if (res.status >= 200 && res.status < 300 && res.data?.ok === true) {
       console.log('=== GLPI CLI IMPORT SUCCESS ===');
-      console.log('email:', email);
+      console.log('email:', normalizedEmail);
       console.log('filter:', res.data.filter);
       return true;
     }
@@ -42,6 +58,12 @@ export async function requestGlpiLdapImport(email) {
   } catch (err) {
     console.error('=== GLPI CLI IMPORT REQUEST ERROR ===');
     console.error(err.message);
+
+    if (err.response) {
+      console.error('response status:', err.response.status);
+      console.error('response data:', err.response.data);
+    }
+
     return false;
   }
 }

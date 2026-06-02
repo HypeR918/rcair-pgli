@@ -1,3 +1,5 @@
+import fs from 'node:fs';
+import FormData from 'form-data';
 import axios from 'axios';
 import { env } from '../config/env.js';
 import { GlpiTicketStatus } from '../utils/constants.js';
@@ -91,7 +93,6 @@ export async function glpiApiRequest(method, path, data = null) {
       validateStatus: () => true,
     };
 
-    // GLPI запрещает body у GET-запросов.
     if (data !== null && data !== undefined && lowerMethod !== 'get') {
       config.data = data;
     }
@@ -108,7 +109,103 @@ export async function glpiApiRequest(method, path, data = null) {
     await glpiKillSession(sessionToken);
   }
 }
+export async function glpiMultipartRequest(method, path, form) {
+  const sessionToken = await glpiInitSession();
 
+  try {
+    const baseUrl = getGlpiApiBaseUrl();
+    const lowerMethod = method.toLowerCase();
+
+    const needsWriteSession = ['post', 'put', 'patch', 'delete'].includes(lowerMethod);
+    const separator = path.includes('?') ? '&' : '?';
+    const finalPath = needsWriteSession
+      ? `${path}${separator}session_write=true`
+      : path;
+
+    const headers = {
+      ...getGlpiApiHeaders(sessionToken),
+      ...form.getHeaders(),
+    };
+
+    delete headers['Content-Type'];
+
+    const res = await axios({
+      method,
+      url: `${baseUrl}${finalPath}`,
+      headers,
+      data: form,
+      timeout: 120000,
+      maxBodyLength: Infinity,
+      maxContentLength: Infinity,
+      validateStatus: () => true,
+    });
+
+    if (res.status < 200 || res.status >= 300) {
+      console.error('GLPI multipart request failed:', method, finalPath, res.status, res.data);
+      throw new Error(`GLPI multipart request failed: ${res.status}`);
+    }
+
+    return res.data;
+  } finally {
+    await glpiKillSession(sessionToken);
+  }
+}
+
+export async function uploadGlpiDocument(file) {
+  const form = new FormData();
+
+  const uploadManifest = {
+    input: {
+      name: file.filename,
+      _filename: [file.filename],
+    },
+  };
+
+  form.append('uploadManifest', JSON.stringify(uploadManifest), {
+    contentType: 'application/json',
+  });
+
+  form.append('filename[0]', fs.createReadStream(file.path), {
+    filename: file.filename,
+    contentType: file.mimeType || 'application/octet-stream',
+  });
+
+  const result = await glpiMultipartRequest('post', '/Document', form);
+
+  if (!result?.id) {
+    console.error('GLPI document upload unexpected response:', result);
+    throw new Error('GLPI document was not uploaded');
+  }
+
+  return result.id;
+}
+
+export async function attachGlpiDocumentToTicket(ticketId, documentId) {
+  return await glpiApiRequest('post', '/Document_Item', {
+    input: {
+      documents_id: documentId,
+      itemtype: 'Ticket',
+      items_id: ticketId,
+    },
+  });
+}
+
+export async function uploadAndAttachFilesToTicket(ticketId, files) {
+  const uploaded = [];
+
+  for (const file of files || []) {
+    const documentId = await uploadGlpiDocument(file);
+
+    await attachGlpiDocumentToTicket(ticketId, documentId);
+
+    uploaded.push({
+      documentId,
+      filename: file.filename,
+    });
+  }
+
+  return uploaded;
+}
 export async function getGlpiTicket(ticketId) {
   return await glpiApiRequest('get', `/Ticket/${ticketId}`);
 }
@@ -127,29 +224,59 @@ export async function createGlpiTicket(title, content, options = {}) {
     name: title,
     content,
     entities_id: options.entityId ?? env.GLPI_ENTITY_ID,
-    type: options.type ?? 2,
+    type: options.type ?? env.GLPI_DEFAULT_TICKET_TYPE,
     urgency: options.urgency ?? 3,
     impact: options.impact ?? 3,
     priority: options.priority ?? 3,
   };
+
+  const requesterId = Number(options.requesterId || 0);
+
+  if (requesterId > 0) {
+    /*
+      users_id_recipient — получатель / инициатор в основной карточке заявки.
+      _users_id_requester — заявитель/requester в участниках заявки.
+
+      Важно:
+      Не добавляем requester отдельным запросом /Ticket_User,
+      потому что на текущем API-токене нет прав:
+      ERROR_GLPI_ADD: У Вас нет прав для выполнения этой операции.
+
+      Поэтому вставляем пользователя сразу при создании Ticket.
+    */
+    input.users_id_recipient = requesterId;
+    input._users_id_requester = requesterId;
+  }
+
+  const requestTypeId =
+    options.requestTypeId !== undefined
+      ? Number(options.requestTypeId)
+      : env.GLPI_DEFAULT_REQUEST_TYPE_ID;
+
+  if (requestTypeId > 0) {
+    input.requesttypes_id = requestTypeId;
+  }
 
   const categoryId =
     options.categoryId !== undefined
       ? Number(options.categoryId)
       : env.GLPI_DEFAULT_REQUEST_CATEGORY_ID;
 
+  if (categoryId > 0) {
+    input.itilcategories_id = categoryId;
+  }
+
   const groupId =
     options.groupId !== undefined
       ? Number(options.groupId)
       : env.GLPI_DEFAULT_ASSIGN_GROUP_ID;
 
-  if (categoryId > 0) {
-    input.itilcategories_id = categoryId;
-  }
-
   if (groupId > 0) {
     input.groups_id_assign = groupId;
   }
+
+  console.log('=== GLPI CREATE TICKET INPUT ===');
+  console.log(JSON.stringify(input, null, 2));
 
   const result = await glpiApiRequest('post', '/Ticket', { input });
 
@@ -162,8 +289,12 @@ export async function createGlpiTicket(title, content, options = {}) {
 }
 
 export async function addGlpiTicketRequester(ticketId, glpiUserId) {
-  // Важно: не глушим ошибку.
-  // Если requester не добавился, заявка не считается корректно созданной от пользователя.
+  /*
+    Функцию оставляем на будущее, но createGlpiUserTicket её НЕ вызывает.
+
+    Если позже выдашь API-пользователю права на добавление requester,
+    можно будет снова использовать этот метод.
+  */
   await glpiApiRequest('post', '/Ticket_User', {
     input: {
       tickets_id: ticketId,
@@ -292,18 +423,6 @@ export async function getTicketDecision(ticketId) {
   };
 }
 
-export function buildUserTicketContent(maxUserId, glpiUserId, content) {
-  return [
-    'Заявка создана пользователем через MAX.',
-    '',
-    `MAX ID: ${maxUserId}`,
-    `GLPI user ID: ${glpiUserId}`,
-    '',
-    'Описание:',
-    content,
-  ].join('\n');
-}
-
 export function buildRegistrationTicketContent(maxUserId, email, data) {
   return [
     'Пользователь не найден в SDS-helpdesk после проверки через LDAP/GLPI.',
@@ -336,20 +455,42 @@ export async function createGlpiRegistrationTicket(maxUserId, email, data) {
   const title = `Регистрация пользователя в SDS-helpdesk: ${data.fio || email}`;
   const content = buildRegistrationTicketContent(maxUserId, email, data);
 
-  return await createGlpiTicket(title, content);
+  return await createGlpiTicket(title, content, {
+    type: env.GLPI_DEFAULT_TICKET_TYPE,
+    requestTypeId: env.GLPI_DEFAULT_REQUEST_TYPE_ID,
+  });
 }
 
-export async function createGlpiUserTicket(maxUserId, glpiUserId, content) {
-  const title = truncateText(content, 80) || 'Заявка из MAX';
-  const ticketContent = buildUserTicketContent(maxUserId, glpiUserId, content);
+export function buildUserTicketContent(maxUserId, glpiUserId, description) {
+  return description;
+}
 
-  const ticketId = await createGlpiTicket(title, ticketContent);
+export async function createGlpiUserTicket(maxUserId, glpiUserId, title, description) {
+  const ticketTitle = truncateText(title, 250) || 'Заявка из MAX';
+  const ticketContent = buildUserTicketContent(maxUserId, glpiUserId, description);
 
-  await addGlpiTicketRequester(ticketId, glpiUserId);
+  const ticketId = await createGlpiTicket(ticketTitle, ticketContent, {
+    requesterId: glpiUserId,
+    type: env.GLPI_DEFAULT_TICKET_TYPE,
+    requestTypeId: env.GLPI_DEFAULT_REQUEST_TYPE_ID,
+  });
+
+  /*
+    ВАЖНО:
+    Раньше здесь было:
+      await addGlpiTicketRequester(ticketId, glpiUserId);
+
+    Мы это убрали, потому что GLPI возвращал:
+      ERROR_GLPI_ADD: У Вас нет прав для выполнения этой операции.
+
+    Теперь requester вставляется сразу при создании заявки:
+      users_id_recipient
+      _users_id_requester
+  */
 
   return {
     ticketId,
-    title,
+    title: ticketTitle,
   };
 }
 

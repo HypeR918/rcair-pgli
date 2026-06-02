@@ -31,6 +31,13 @@ export const env = {
   GLPI_API_APP_TOKEN: process.env.GLPI_API_APP_TOKEN,
 
   GLPI_ENTITY_ID: Number(process.env.GLPI_ENTITY_ID || 0),
+
+  // 1 = Инцидент, 2 = Запрос
+  GLPI_DEFAULT_TICKET_TYPE: Number(process.env.GLPI_DEFAULT_TICKET_TYPE || 1),
+
+  // Источник запроса. В GLPI обычно Helpdesk = 1, но лучше проверить в своей базе.
+  GLPI_DEFAULT_REQUEST_TYPE_ID: Number(process.env.GLPI_DEFAULT_REQUEST_TYPE_ID || 1),
+
   GLPI_DEFAULT_REQUEST_CATEGORY_ID: Number(process.env.GLPI_DEFAULT_REQUEST_CATEGORY_ID || 0),
   GLPI_DEFAULT_ASSIGN_GROUP_ID: Number(process.env.GLPI_DEFAULT_ASSIGN_GROUP_ID || 0),
 
