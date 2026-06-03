@@ -131,11 +131,25 @@ export async function unblockMaxId(maxUserId) {
 
 export async function findGlpiUserByMaxId(maxUserId) {
   const [rows] = await pool.execute(
-    `SELECT id, name, realname, firstname
-     FROM glpi_users
-     WHERE max_id = ?
-       AND is_active = 1
-       AND COALESCE(is_blocked, 0) = 0
+    `SELECT
+       u.id,
+       u.name,
+       u.realname,
+       u.firstname,
+       COALESCE(user_entity.entity_id, 0) AS entity_id,
+       COALESCE(entity.name, 'Root') AS entity_name
+     FROM glpi_users u
+     LEFT JOIN (
+       SELECT
+         users_id,
+         COALESCE(MIN(NULLIF(entities_id, 0)), MIN(entities_id), 0) AS entity_id
+       FROM glpi_profiles_users
+       GROUP BY users_id
+     ) user_entity ON user_entity.users_id = u.id
+     LEFT JOIN glpi_entities entity ON entity.id = user_entity.entity_id
+     WHERE u.max_id = ?
+       AND u.is_active = 1
+       AND COALESCE(u.is_blocked, 0) = 0
      LIMIT 1`,
     [maxUserId]
   );
@@ -151,9 +165,19 @@ export async function findGlpiUserAfterSdsImport(email) {
        u.id,
        u.name,
        u.realname,
-       u.firstname
+       u.firstname,
+       COALESCE(user_entity.entity_id, 0) AS entity_id,
+       COALESCE(entity.name, 'Root') AS entity_name
      FROM glpi_users u
      INNER JOIN glpi_useremails e ON e.users_id = u.id
+     LEFT JOIN (
+       SELECT
+         users_id,
+         COALESCE(MIN(NULLIF(entities_id, 0)), MIN(entities_id), 0) AS entity_id
+       FROM glpi_profiles_users
+       GROUP BY users_id
+     ) user_entity ON user_entity.users_id = u.id
+     LEFT JOIN glpi_entities entity ON entity.id = user_entity.entity_id
      WHERE LOWER(e.email) = ?
        AND u.is_active = 1
      ORDER BY u.id DESC
@@ -266,7 +290,15 @@ export async function saveBotUserTicket(maxUserId, glpiUserId, ticketId, title, 
 
 export async function getBotUserTicket(maxUserId, ticketId) {
   const [rows] = await pool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT
+       id,
+       max_id,
+       glpi_user_id,
+       glpi_ticket_id,
+       title,
+       status,
+       solution_notified,
+       closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
        AND glpi_ticket_id = ?
@@ -279,7 +311,15 @@ export async function getBotUserTicket(maxUserId, ticketId) {
 
 export async function getBotUserTickets(maxUserId, limit = 10) {
   const [rows] = await pool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT
+       id,
+       max_id,
+       glpi_user_id,
+       glpi_ticket_id,
+       title,
+       status,
+       solution_notified,
+       closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
      ORDER BY glpi_ticket_id DESC
@@ -292,7 +332,15 @@ export async function getBotUserTickets(maxUserId, limit = 10) {
 
 export async function getActiveBotUserTickets(limit = 50) {
   const [rows] = await pool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT
+       id,
+       max_id,
+       glpi_user_id,
+       glpi_ticket_id,
+       title,
+       status,
+       solution_notified,
+       closed_notified
      FROM bot_user_tickets
      WHERE status IS NULL OR status < 6
      ORDER BY id ASC
@@ -373,40 +421,106 @@ export async function isFollowupKnown(ticketId, followupId) {
 
   return rows.length > 0;
 }
-export async function forceTicketRequesterInDb(ticketId, glpiUserId) {
-  const connection = await pool.getConnection();
 
-  try {
-    await connection.beginTransaction();
+export async function deleteBotUserTicket(maxUserId, ticketId) {
+  await pool.execute(
+    `DELETE FROM bot_user_tickets
+     WHERE max_id = ?
+       AND glpi_ticket_id = ?`,
+    [maxUserId, ticketId]
+  );
+}
 
-    await connection.execute(
-      `UPDATE glpi_tickets
-       SET users_id_recipient = ?,
-           date_mod = NOW()
-       WHERE id = ?`,
-      [glpiUserId, ticketId]
-    );
+export async function deleteBotUserTicketByTicketId(ticketId) {
+  await pool.execute(
+    `DELETE FROM bot_user_tickets
+     WHERE glpi_ticket_id = ?`,
+    [ticketId]
+  );
+}
 
-    await connection.execute(
-      `DELETE FROM glpi_tickets_users
-       WHERE tickets_id = ?
-         AND type = 1`,
-      [ticketId]
-    );
+/*
+  Ниже оставлены безопасные заглушки для старых импортов.
 
-    await connection.execute(
-      `INSERT INTO glpi_tickets_users
-        (tickets_id, users_id, type, use_notification, alternative_email)
-       VALUES (?, ?, 1, 1, NULL)`,
-      [ticketId, glpiUserId]
-    );
+  В новой схеме с сервисным аккаунтом MAX Bot эти функции НЕ должны
+  использоваться в рабочем пути.
 
-    await connection.commit();
-  } catch (error) {
-    await connection.rollback();
-    console.error('forceTicketRequesterInDb error:', error.message);
-    throw error;
-  } finally {
-    connection.release();
-  }
+  Почему:
+  - requester задаётся через GLPI API в glpiService.js;
+  - followup пишется через GLPI API;
+  - документы привязываются через GLPI API;
+  - статус заявки меняется через GLPI API.
+
+  Если где-то в старом файле случайно остался импорт/вызов,
+  бот не упадёт, но в логах будет видно, что надо удалить старый вызов.
+*/
+
+export async function forceTicketRequesterInDb(ticketId, glpiUserId, entityId = null) {
+  console.warn(
+    'forceTicketRequesterInDb is deprecated and was skipped. ' +
+    'Requester must be set through GLPI API. ' +
+    `ticketId=${ticketId}, glpiUserId=${glpiUserId}, entityId=${entityId}`
+  );
+
+  return null;
+}
+
+export async function addGlpiTicketFollowupInDb(ticketId, glpiUserId, content, isPrivate = 0) {
+  console.warn(
+    'addGlpiTicketFollowupInDb is deprecated and was skipped. ' +
+    'Followup must be added through GLPI API. ' +
+    `ticketId=${ticketId}, glpiUserId=${glpiUserId}, isPrivate=${isPrivate}`
+  );
+
+  return null;
+}
+
+export async function updateGlpiTicketStatusInDb(ticketId, status) {
+  console.warn(
+    'updateGlpiTicketStatusInDb is deprecated and was skipped. ' +
+    'Ticket status must be changed through GLPI API. ' +
+    `ticketId=${ticketId}, status=${status}`
+  );
+
+  return null;
+}
+
+export async function attachGlpiDocumentToTicketInDb(ticketId, documentId) {
+  console.warn(
+    'attachGlpiDocumentToTicketInDb is deprecated and was skipped. ' +
+    'Document must be attached through GLPI API. ' +
+    `ticketId=${ticketId}, documentId=${documentId}`
+  );
+
+  return null;
+}
+
+export async function getGlpiTicketFromDb(ticketId) {
+  console.warn(
+    'getGlpiTicketFromDb is deprecated and was skipped. ' +
+    'Ticket must be read through GLPI API. ' +
+    `ticketId=${ticketId}`
+  );
+
+  return null;
+}
+
+export async function getGlpiTicketFollowupsFromDb(ticketId, limit = 20) {
+  console.warn(
+    'getGlpiTicketFollowupsFromDb is deprecated and was skipped. ' +
+    'Followups must be read through GLPI API. ' +
+    `ticketId=${ticketId}, limit=${limit}`
+  );
+
+  return [];
+}
+
+export async function getLatestTicketSolutionTextFromDb(ticketId) {
+  console.warn(
+    'getLatestTicketSolutionTextFromDb is deprecated and was skipped. ' +
+    'Solutions must be read through GLPI API. ' +
+    `ticketId=${ticketId}`
+  );
+
+  return '';
 }

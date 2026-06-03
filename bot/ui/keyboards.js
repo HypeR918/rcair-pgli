@@ -40,3 +40,23 @@ export function ticketListKeyboard(tickets) {
 
   return Keyboard.inlineKeyboard(rows);
 }
+
+export function ticketFilesKeyboard(filesCount = 0) {
+  const rows = [];
+
+  if (Number(filesCount || 0) > 0) {
+    rows.push([
+      Keyboard.button.callback(`Создать заявку с файлами (${filesCount})`, 'ticket:create_with_files'),
+    ]);
+  }
+
+  rows.push([
+    Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
+  ]);
+
+  rows.push([
+    Keyboard.button.callback('Отменить', 'menu:back', { intent: 'negative' }),
+  ]);
+
+  return Keyboard.inlineKeyboard(rows);
+}

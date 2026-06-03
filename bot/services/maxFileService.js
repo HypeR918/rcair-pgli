@@ -203,7 +203,6 @@ export async function cleanupDownloadedFiles(files) {
         await fsp.unlink(file.path);
       }
     } catch {
-      // ignore
     }
   }
 }

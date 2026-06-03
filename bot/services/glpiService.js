@@ -35,6 +35,141 @@ function getGlpiApiHeaders(sessionToken) {
   return headers;
 }
 
+function hasFileExtension(filename) {
+  return /\.[a-z0-9]{2,10}$/i.test(String(filename || ''));
+}
+
+function appendExtensionIfMissing(filename, extension) {
+  const safeFilename = String(filename || '').trim() || `attachment-${Date.now()}`;
+
+  if (hasFileExtension(safeFilename)) {
+    return safeFilename;
+  }
+
+  return `${safeFilename}.${extension}`;
+}
+
+function detectMimeAndExtensionByMagic(filePath, currentMimeType, currentFilename) {
+  const buffer = fs.readFileSync(filePath);
+
+  const b0 = buffer[0];
+  const b1 = buffer[1];
+  const b2 = buffer[2];
+  const b3 = buffer[3];
+
+  if (b0 === 0xff && b1 === 0xd8 && b2 === 0xff) {
+    return {
+      mimeType: 'image/jpeg',
+      filename: appendExtensionIfMissing(currentFilename, 'jpg'),
+    };
+  }
+
+  if (b0 === 0x89 && b1 === 0x50 && b2 === 0x4e && b3 === 0x47) {
+    return {
+      mimeType: 'image/png',
+      filename: appendExtensionIfMissing(currentFilename, 'png'),
+    };
+  }
+
+  if (b0 === 0x47 && b1 === 0x49 && b2 === 0x46) {
+    return {
+      mimeType: 'image/gif',
+      filename: appendExtensionIfMissing(currentFilename, 'gif'),
+    };
+  }
+
+  if (
+    b0 === 0x52 &&
+    b1 === 0x49 &&
+    b2 === 0x46 &&
+    b3 === 0x46 &&
+    buffer[8] === 0x57 &&
+    buffer[9] === 0x45 &&
+    buffer[10] === 0x42 &&
+    buffer[11] === 0x50
+  ) {
+    return {
+      mimeType: 'image/webp',
+      filename: appendExtensionIfMissing(currentFilename, 'webp'),
+    };
+  }
+
+  if (b0 === 0x25 && b1 === 0x50 && b2 === 0x44 && b3 === 0x46) {
+    return {
+      mimeType: 'application/pdf',
+      filename: appendExtensionIfMissing(currentFilename, 'pdf'),
+    };
+  }
+
+  if (b0 === 0x50 && b1 === 0x4b && b2 === 0x03 && b3 === 0x04) {
+    return {
+      mimeType: currentMimeType && currentMimeType !== 'application/octet-stream'
+        ? currentMimeType
+        : 'application/zip',
+      filename: hasFileExtension(currentFilename)
+        ? currentFilename
+        : `${currentFilename}.zip`,
+    };
+  }
+
+  return {
+    mimeType: currentMimeType || 'application/octet-stream',
+    filename: currentFilename,
+  };
+}
+
+function extractEntityIdFromTicket(ticket) {
+  const raw = ticket?.entities_id;
+
+  if (raw === null || raw === undefined || raw === '') {
+    return 0;
+  }
+
+  if (typeof raw === 'object') {
+    return Number(raw.id || raw.value || 0);
+  }
+
+  return Number(raw || 0);
+}
+
+function extractEntityNameFromTicket(ticket) {
+  if (!ticket) {
+    return '';
+  }
+
+  if (typeof ticket.entities_id === 'object') {
+    return (
+      ticket.entities_id.completename ||
+      ticket.entities_id.name ||
+      ticket.entities_id.label ||
+      ''
+    );
+  }
+
+  return (
+    ticket.entities_name ||
+    ticket.entity_name ||
+    ticket.entityName ||
+    ''
+  );
+}
+
+function normalizeEntityId(entityId) {
+  const normalized = Number(entityId);
+
+  if (Number.isFinite(normalized) && normalized >= 0) {
+    return normalized;
+  }
+
+  const fallback = Number(env.GLPI_ENTITY_ID || 0);
+
+  if (Number.isFinite(fallback) && fallback >= 0) {
+    return fallback;
+  }
+
+  return 0;
+}
+
 export async function glpiInitSession() {
   if (!env.GLPI_API_USER_TOKEN) {
     throw new Error('GLPI_API_USER_TOKEN is not configured');
@@ -109,6 +244,7 @@ export async function glpiApiRequest(method, path, data = null) {
     await glpiKillSession(sessionToken);
   }
 }
+
 export async function glpiMultipartRequest(method, path, form) {
   const sessionToken = await glpiInitSession();
 
@@ -122,12 +258,37 @@ export async function glpiMultipartRequest(method, path, form) {
       ? `${path}${separator}session_write=true`
       : path;
 
+    const formHeaders = form.getHeaders();
+
     const headers = {
-      ...getGlpiApiHeaders(sessionToken),
-      ...form.getHeaders(),
+      ...formHeaders,
+      'Session-Token': sessionToken,
     };
 
-    delete headers['Content-Type'];
+    if (env.GLPI_API_APP_TOKEN) {
+      headers['App-Token'] = env.GLPI_API_APP_TOKEN;
+    }
+
+    let contentLength = null;
+
+    try {
+      contentLength = await new Promise((resolve, reject) => {
+        form.getLength((error, length) => {
+          if (error) {
+            reject(error);
+            return;
+          }
+
+          resolve(length);
+        });
+      });
+    } catch (error) {
+      console.warn('GLPI multipart Content-Length was not calculated:', error.message);
+    }
+
+    if (contentLength) {
+      headers['Content-Length'] = contentLength;
+    }
 
     const res = await axios({
       method,
@@ -152,32 +313,84 @@ export async function glpiMultipartRequest(method, path, form) {
 }
 
 export async function uploadGlpiDocument(file) {
+  if (!file?.path) {
+    throw new Error('Attachment file path is empty');
+  }
+
+  if (!fs.existsSync(file.path)) {
+    throw new Error(`Attachment file does not exist: ${file.path}`);
+  }
+
+  const stat = fs.statSync(file.path);
+
+  if (!stat.isFile() || stat.size <= 0) {
+    throw new Error(`Attachment file is empty or invalid: ${file.path}`);
+  }
+
+  const originalFilename = String(file.filename || '').trim() || `attachment-${Date.now()}`;
+  const originalMimeType = String(file.mimeType || '').trim() || 'application/octet-stream';
+
+  const detected = detectMimeAndExtensionByMagic(
+    file.path,
+    originalMimeType,
+    originalFilename
+  );
+
+  const filename = detected.filename;
+  const mimeType = detected.mimeType;
+
+  console.log('=== GLPI DOCUMENT UPLOAD START ===');
+  console.log('localPath:', file.path);
+  console.log('filename:', filename);
+  console.log('mimeType:', mimeType);
+  console.log('size:', stat.size);
+
   const form = new FormData();
 
   const uploadManifest = {
     input: {
-      name: file.filename,
-      _filename: [file.filename],
+      name: filename,
+      _filename: [filename],
     },
   };
 
-  form.append('uploadManifest', JSON.stringify(uploadManifest), {
-    contentType: 'application/json',
-  });
+  form.append('uploadManifest', JSON.stringify(uploadManifest));
 
   form.append('filename[0]', fs.createReadStream(file.path), {
-    filename: file.filename,
-    contentType: file.mimeType || 'application/octet-stream',
+    filename,
+    contentType: mimeType,
+    knownLength: stat.size,
   });
 
   const result = await glpiMultipartRequest('post', '/Document', form);
+
+  console.log('=== GLPI DOCUMENT UPLOAD RESULT FULL ===');
+  console.log(JSON.stringify(result, null, 2));
 
   if (!result?.id) {
     console.error('GLPI document upload unexpected response:', result);
     throw new Error('GLPI document was not uploaded');
   }
 
-  return result.id;
+  const uploadInfo = result?.upload_result?.filename?.[0];
+
+  if (uploadInfo) {
+    console.log('=== GLPI DOCUMENT UPLOAD FILE RESULT ===');
+    console.log(JSON.stringify(uploadInfo, null, 2));
+
+    if (uploadInfo.error) {
+      throw new Error(`GLPI file upload error: ${JSON.stringify(uploadInfo)}`);
+    }
+  }
+
+  console.log('=== GLPI DOCUMENT UPLOADED ===');
+  console.log('documentId:', result.id);
+  console.log('filename:', filename);
+
+  return {
+    documentId: result.id,
+    filename,
+  };
 }
 
 export async function attachGlpiDocumentToTicket(ticketId, documentId) {
@@ -194,20 +407,51 @@ export async function uploadAndAttachFilesToTicket(ticketId, files) {
   const uploaded = [];
 
   for (const file of files || []) {
-    const documentId = await uploadGlpiDocument(file);
+    const { documentId, filename } = await uploadGlpiDocument(file);
 
     await attachGlpiDocumentToTicket(ticketId, documentId);
 
     uploaded.push({
       documentId,
-      filename: file.filename,
+      filename,
     });
   }
 
   return uploaded;
 }
+
 export async function getGlpiTicket(ticketId) {
-  return await glpiApiRequest('get', `/Ticket/${ticketId}`);
+  const ticket = await glpiApiRequest('get', `/Ticket/${ticketId}`);
+
+  const entityId = extractEntityIdFromTicket(ticket);
+  const entityName = extractEntityNameFromTicket(ticket);
+
+  return {
+    ...ticket,
+    entityId,
+    entityName,
+  };
+}
+
+export async function getGlpiEntityName(entityId) {
+  const normalizedEntityId = Number(entityId || 0);
+
+  if (!normalizedEntityId) {
+    return 'Root';
+  }
+
+  try {
+    const entity = await glpiApiRequest('get', `/Entity/${normalizedEntityId}`);
+
+    return (
+      entity.completename ||
+      entity.name ||
+      `Организация ID ${normalizedEntityId}`
+    );
+  } catch (err) {
+    console.error('getGlpiEntityName error:', normalizedEntityId, err.message);
+    return `Организация ID ${normalizedEntityId}`;
+  }
 }
 
 export async function updateGlpiTicket(ticketId, input) {
@@ -219,11 +463,69 @@ export async function updateGlpiTicket(ticketId, input) {
   });
 }
 
+export async function setGlpiTicketRequester(ticketId, glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return null;
+  }
+
+  return await updateGlpiTicket(ticketId, {
+    _users_id_requester: requesterId,
+  });
+}
+
+export async function addGlpiTicketRequester(ticketId, glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return null;
+  }
+
+  return await glpiApiRequest('post', '/Ticket_User', {
+    input: {
+      tickets_id: ticketId,
+      users_id: requesterId,
+      type: 1,
+      use_notification: 1,
+    },
+  });
+}
+
+export async function ensureGlpiTicketRequester(ticketId, glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return;
+  }
+
+  try {
+    await setGlpiTicketRequester(ticketId, requesterId);
+    console.log('=== GLPI REQUESTER SET BY TICKET UPDATE ===');
+    console.log('ticketId:', ticketId);
+    console.log('requesterId:', requesterId);
+    return;
+  } catch (error) {
+    console.warn('setGlpiTicketRequester warning:', error.message);
+  }
+
+  try {
+    await addGlpiTicketRequester(ticketId, requesterId);
+    console.log('=== GLPI REQUESTER SET BY TICKET_USER ===');
+    console.log('ticketId:', ticketId);
+    console.log('requesterId:', requesterId);
+  } catch (error) {
+    console.warn('addGlpiTicketRequester warning:', error.message);
+  }
+}
+
 export async function createGlpiTicket(title, content, options = {}) {
+  const entityId = normalizeEntityId(env.GLPI_ENTITY_ID);
+
   const input = {
     name: title,
     content,
-    entities_id: options.entityId ?? env.GLPI_ENTITY_ID,
+    entities_id: entityId,
     type: options.type ?? env.GLPI_DEFAULT_TICKET_TYPE,
     urgency: options.urgency ?? 3,
     impact: options.impact ?? 3,
@@ -234,17 +536,15 @@ export async function createGlpiTicket(title, content, options = {}) {
 
   if (requesterId > 0) {
     /*
-      users_id_recipient — получатель / инициатор в основной карточке заявки.
-      _users_id_requester — заявитель/requester в участниках заявки.
+      Заявка создаётся токеном сервисного аккаунта GLPI_API_USER_TOKEN.
+      Автором создания остаётся сервисный аккаунт.
 
-      Важно:
-      Не добавляем requester отдельным запросом /Ticket_User,
-      потому что на текущем API-токене нет прав:
-      ERROR_GLPI_ADD: У Вас нет прав для выполнения этой операции.
+      Инициатор запроса — пользователь, который авторизовался в MAX-боте.
+      Для этого передаём _users_id_requester.
 
-      Поэтому вставляем пользователя сразу при создании Ticket.
+      users_id_recipient не ставим пользователем, потому что в твоём GLPI это
+      попадает в "Автор", а не в нужное поле "Инициатор запроса".
     */
-    input.users_id_recipient = requesterId;
     input._users_id_requester = requesterId;
   }
 
@@ -285,23 +585,13 @@ export async function createGlpiTicket(title, content, options = {}) {
     throw new Error('GLPI ticket was not created');
   }
 
-  return result.id;
-}
+  const ticketId = result.id;
 
-export async function addGlpiTicketRequester(ticketId, glpiUserId) {
-  /*
-    Функцию оставляем на будущее, но createGlpiUserTicket её НЕ вызывает.
+  if (requesterId > 0) {
+    await ensureGlpiTicketRequester(ticketId, requesterId);
+  }
 
-    Если позже выдашь API-пользователю права на добавление requester,
-    можно будет снова использовать этот метод.
-  */
-  await glpiApiRequest('post', '/Ticket_User', {
-    input: {
-      tickets_id: ticketId,
-      users_id: glpiUserId,
-      type: 1,
-    },
-  });
+  return ticketId;
 }
 
 export async function addGlpiTicketFollowup(ticketId, content) {
@@ -465,28 +755,23 @@ export function buildUserTicketContent(maxUserId, glpiUserId, description) {
   return description;
 }
 
-export async function createGlpiUserTicket(maxUserId, glpiUserId, title, description) {
+export async function createGlpiUserTicket(
+  maxUserId,
+  glpiUserId,
+  title,
+  description,
+  options = {}
+) {
   const ticketTitle = truncateText(title, 250) || 'Заявка из MAX';
   const ticketContent = buildUserTicketContent(maxUserId, glpiUserId, description);
 
   const ticketId = await createGlpiTicket(ticketTitle, ticketContent, {
     requesterId: glpiUserId,
-    type: env.GLPI_DEFAULT_TICKET_TYPE,
-    requestTypeId: env.GLPI_DEFAULT_REQUEST_TYPE_ID,
+    type: options.type ?? env.GLPI_DEFAULT_TICKET_TYPE,
+    requestTypeId: options.requestTypeId ?? env.GLPI_DEFAULT_REQUEST_TYPE_ID,
+    categoryId: options.categoryId ?? env.GLPI_DEFAULT_REQUEST_CATEGORY_ID,
+    groupId: options.groupId ?? env.GLPI_DEFAULT_ASSIGN_GROUP_ID,
   });
-
-  /*
-    ВАЖНО:
-    Раньше здесь было:
-      await addGlpiTicketRequester(ticketId, glpiUserId);
-
-    Мы это убрали, потому что GLPI возвращал:
-      ERROR_GLPI_ADD: У Вас нет прав для выполнения этой операции.
-
-    Теперь requester вставляется сразу при создании заявки:
-      users_id_recipient
-      _users_id_requester
-  */
 
   return {
     ticketId,

@@ -6,6 +6,7 @@ import {
 } from '../utils/textUtils.js';
 
 import {
+  getSession,
   setSession,
   deleteSession,
 } from '../state/sessionStore.js';
@@ -19,7 +20,6 @@ import {
   updateBotUserTicketStatus,
   markTicketClosedNotified,
   resetTicketSolutionNotified,
-  forceTicketRequesterInDb,
 } from '../services/dbService.js';
 
 import {
@@ -42,7 +42,25 @@ import {
   mainMenuKeyboard,
   ticketActionsKeyboard,
   ticketListKeyboard,
+  ticketFilesKeyboard,
 } from '../ui/keyboards.js';
+
+function getDraftFiles(session) {
+  if (!session.ticketDraft) {
+    session.ticketDraft = {};
+  }
+
+  if (!Array.isArray(session.ticketDraft.files)) {
+    session.ticketDraft.files = [];
+  }
+
+  return session.ticketDraft.files;
+}
+
+async function cancelDraftFiles(session) {
+  const files = session?.ticketDraft?.files || [];
+  await cleanupDownloadedFiles(files);
+}
 
 export async function createUserTicket(ctx, title, description, files = []) {
   const maxUserId = ctx.user.user_id;
@@ -54,18 +72,24 @@ export async function createUserTicket(ctx, title, description, files = []) {
     return;
   }
 
+  /*
+    Заявка создаётся через GLPI API от сервисного аккаунта MAX Bot.
+
+    Автор создания:
+      сервисный аккаунт, чей токен указан в GLPI_API_USER_TOKEN.
+
+    Инициатор запроса:
+      пользователь GLPI, который авторизовался в MAX-боте.
+
+    Организацию пользователя сюда НЕ передаём.
+    Заявка создаётся в env.GLPI_ENTITY_ID, где у сервисного аккаунта есть права.
+  */
   const { ticketId, title: ticketTitle } = await createGlpiUserTicket(
     maxUserId,
     user.id,
     title,
     description
   );
-
-  // Принудительно выставляем инициатора заявки в БД GLPI.
-  // Это заполняет оба поля:
-  // 1. glpi_tickets.users_id_recipient
-  // 2. glpi_tickets_users type = 1
-  await forceTicketRequesterInDb(ticketId, user.id);
 
   let uploadedFiles = [];
   let uploadError = null;
@@ -306,6 +330,28 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
   await ctx.reply(`Решение по заявке №${ticketId} отклонено. Комментарий отправлен инженерам.`);
 }
 
+async function finishTicketDraft(ctx, session, withFiles) {
+  const maxUserId = ctx.user.user_id;
+  const draft = session.ticketDraft || {};
+
+  const title = String(draft.title || '').trim();
+  const description = String(draft.description || '').trim();
+  const files = withFiles ? getDraftFiles(session) : [];
+
+  if (!title || !description) {
+    await cancelDraftFiles(session);
+    setSession(maxUserId, { state: State.IDLE });
+    await ctx.reply('Черновик заявки поврежден. Начните создание заявки заново.');
+    return;
+  }
+
+  if (!withFiles) {
+    await cleanupDownloadedFiles(getDraftFiles(session));
+  }
+
+  await createUserTicket(ctx, title, description, files);
+}
+
 export async function handleTicketTextState(ctx, session, text) {
   const maxUserId = ctx.user.user_id;
 
@@ -318,41 +364,88 @@ export async function handleTicketTextState(ctx, session, text) {
     session.state = State.WAIT_NEW_TICKET_DESCRIPTION;
     session.ticketDraft = {
       title: text,
+      description: '',
+      files: [],
     };
 
     setSession(maxUserId, session);
 
-    await ctx.reply('Теперь введите описание заявки. Можно приложить фото или файл к этому же сообщению.');
+    await ctx.reply('Введите описание заявки:');
     return true;
   }
 
   if (session.state === State.WAIT_NEW_TICKET_DESCRIPTION) {
-    const files = await collectDownloadedMaxAttachments(ctx);
-
     if (text.length < 5) {
-      await cleanupDownloadedFiles(files);
       await ctx.reply('Описание слишком короткое. Опишите обращение подробнее:');
       return true;
     }
 
-    const title = session.ticketDraft?.title || 'Заявка из MAX';
-    const description = text;
+    session.state = State.WAIT_NEW_TICKET_FILES;
+    session.ticketDraft = {
+      ...(session.ticketDraft || {}),
+      description: text,
+      files: [],
+    };
 
-    await createUserTicket(ctx, title, description, files);
+    setSession(maxUserId, session);
+
+    await ctx.reply(
+      [
+        'Теперь можно прикрепить фото или файлы.',
+        '',
+        'Отправьте файлы одним или несколькими сообщениями.',
+        'Когда закончите — нажмите кнопку создания заявки.',
+      ].join('\n'),
+      {
+        attachments: [ticketFilesKeyboard(0)],
+      }
+    );
+
     return true;
   }
 
-  // Старая логика, если где-то осталась сессия WAIT_NEW_TICKET_CONTENT.
-  if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
-    const files = await collectDownloadedMaxAttachments(ctx);
+  if (session.state === State.WAIT_NEW_TICKET_FILES) {
+    const incomingFiles = await collectDownloadedMaxAttachments(ctx);
 
+    if (incomingFiles.length > 0) {
+      const draftFiles = getDraftFiles(session);
+      draftFiles.push(...incomingFiles);
+      session.ticketDraft.files = draftFiles;
+
+      setSession(maxUserId, session);
+
+      await ctx.reply(`Файлы добавлены: ${draftFiles.length}.`, {
+        attachments: [ticketFilesKeyboard(draftFiles.length)],
+      });
+
+      return true;
+    }
+
+    const normalizedText = text.toLowerCase();
+
+    if (['создать', 'готово', 'готов', 'без файлов', 'пропустить'].includes(normalizedText)) {
+      await finishTicketDraft(
+        ctx,
+        session,
+        normalizedText !== 'без файлов' && normalizedText !== 'пропустить'
+      );
+      return true;
+    }
+
+    await ctx.reply('Прикрепите файл или нажмите кнопку создания заявки.', {
+      attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
+    });
+
+    return true;
+  }
+
+  if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
     if (text.length < 5) {
-      await cleanupDownloadedFiles(files);
       await ctx.reply('Опишите обращение подробнее:');
       return true;
     }
 
-    await createUserTicket(ctx, truncateText(text, 80), text, files);
+    await createUserTicket(ctx, truncateText(text, 80), text, []);
     return true;
   }
 
@@ -410,10 +503,42 @@ export function registerTicketActions(bot) {
     setSession(maxUserId, {
       state: State.WAIT_NEW_TICKET_TITLE,
       glpiUserId: user.id,
-      ticketDraft: {},
+      ticketDraft: {
+        title: '',
+        description: '',
+        files: [],
+      },
     });
 
     await ctx.reply('Введите заголовок заявки:');
+  });
+
+  bot.action('ticket:create_with_files', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
+
+    if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
+      await ctx.reply('Нет активного черновика заявки.');
+      return;
+    }
+
+    await finishTicketDraft(ctx, session, true);
+  });
+
+  bot.action('ticket:create_without_files', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
+
+    if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
+      await ctx.reply('Нет активного черновика заявки.');
+      return;
+    }
+
+    await finishTicketDraft(ctx, session, false);
   });
 
   bot.action('menu:list', async ctx => {
@@ -424,6 +549,12 @@ export function registerTicketActions(bot) {
     if (!ctx.user || !ctx.user.user_id) return;
 
     const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
+
+    if (session?.state === State.WAIT_NEW_TICKET_FILES) {
+      await cancelDraftFiles(session);
+    }
+
     const user = await findGlpiUserByMaxId(maxUserId);
 
     if (user) {
@@ -450,13 +581,24 @@ export function registerTicketActions(bot) {
         'Новая — создать заявку.',
         'Выбрать — открыть свои заявки.',
         'В заявке можно добавить комментарий, принять или отклонить решение.',
-        'При создании заявки и при комментарии можно приложить фото или файл.',
+        '',
+        'Создание заявки:',
+        '1. Заголовок.',
+        '2. Описание.',
+        '3. Прикрепление файлов.',
+        '4. Создание заявки.',
       ].join('\n')
     );
   });
 
   bot.action('menu:logout', async ctx => {
     if (ctx.user && ctx.user.user_id) {
+      const session = getSession(ctx.user.user_id);
+
+      if (session?.state === State.WAIT_NEW_TICKET_FILES) {
+        await cancelDraftFiles(session);
+      }
+
       deleteSession(ctx.user.user_id);
     }
 
