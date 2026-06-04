@@ -22,6 +22,11 @@ import {
 } from '../services/sdsService.js';
 
 import {
+  cleanupDownloadedFiles,
+} from '../services/maxFileService.js';
+
+import {
+  getSession,
   setSession,
   deleteSession,
 } from '../state/sessionStore.js';
@@ -40,6 +45,31 @@ export async function showWelcomeAndMenu(ctx, user) {
     'пользователь';
 
   await ctx.reply(`Добро пожаловать, ${fio}!`, {
+    attachments: [mainMenuKeyboard()],
+  });
+}
+
+export async function showMenu(ctx) {
+  const maxUserId = ctx.user.user_id;
+  const session = getSession(maxUserId);
+
+  if (session?.ticketDraft?.files?.length > 0) {
+    await cleanupDownloadedFiles(session.ticketDraft.files);
+  }
+
+  const user = await findGlpiUserByMaxId(maxUserId);
+
+  if (!user) {
+    await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+    return;
+  }
+
+  setSession(maxUserId, {
+    state: State.IDLE,
+    glpiUserId: user.id,
+  });
+
+  await ctx.reply('Главное меню:', {
     attachments: [mainMenuKeyboard()],
   });
 }
@@ -204,5 +234,11 @@ export function registerUserHandlers(bot) {
 
   bot.command('start', async ctx => {
     await entryPoint(ctx);
+  });
+
+  bot.command('menu', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    await showMenu(ctx);
   });
 }

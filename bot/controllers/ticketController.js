@@ -22,6 +22,8 @@ import {
   markTicketClosedNotified,
   resetTicketSolutionNotified,
   deleteBotUserTicketByTicketId,
+  getBotTicketRating,
+  saveBotTicketRating,
 } from '../services/dbService.js';
 
 import {
@@ -42,9 +44,11 @@ import {
 
 import {
   mainMenuKeyboard,
+  helpKeyboard,
   ticketActionsKeyboard,
   ticketListKeyboard,
   ticketFilesKeyboard,
+  ticketRatingKeyboard,
 } from '../ui/keyboards.js';
 
 function getDraftFiles(session) {
@@ -124,6 +128,11 @@ export async function createUserTicket(ctx, title, description, files = []) {
     await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
     return;
   }
+
+  console.log('=== BOT CREATE USER TICKET CONTEXT ===');
+  console.log('maxUserId:', maxUserId);
+  console.log('glpiUserId:', user.id);
+  console.log('localUserEntityId:', user.entity_id);
 
   const { ticketId, title: ticketTitle } = await createGlpiUserTicket(
     maxUserId,
@@ -266,6 +275,8 @@ export async function showTicketDetails(ctx, ticketId) {
       ? await getLatestTicketSolutionText(ticketId)
       : '';
 
+  const rating = await getBotTicketRating(ticketId);
+
   const parts = [
     `Заявка №${ticketId}`,
     `Тема: ${title}`,
@@ -285,6 +296,10 @@ export async function showTicketDetails(ctx, ticketId) {
 
   if (solutionText) {
     parts.push('', 'Предложенное решение:', truncateText(solutionText, 1000));
+  }
+
+  if (rating) {
+    parts.push('', `Оценка пользователя: ${rating.rating}/5`);
   }
 
   await ctx.reply(parts.join('\n'), {
@@ -373,7 +388,23 @@ export async function acceptTicketSolution(ctx, ticketId) {
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта.`);
+  const existingRating = await getBotTicketRating(ticketId);
+
+  if (existingRating) {
+    await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта.`);
+    return;
+  }
+
+  await ctx.reply(
+    [
+      `Решение по заявке №${ticketId} принято. Заявка закрыта.`,
+      '',
+      'Оцените, пожалуйста, работу по заявке от 1 до 5.',
+    ].join('\n'),
+    {
+      attachments: [ticketRatingKeyboard(ticketId)],
+    }
+  );
 }
 
 export async function rejectTicketSolution(ctx, ticketId, reason) {
@@ -401,6 +432,46 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
   });
 
   await ctx.reply(`Решение по заявке №${ticketId} отклонено. Комментарий отправлен инженерам.`);
+}
+
+export async function rateTicket(ctx, ticketId, rating) {
+  const maxUserId = ctx.user.user_id;
+  const normalizedRating = Number(rating || 0);
+
+  if (!Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5) {
+    await ctx.reply('Некорректная оценка. Выберите оценку от 1 до 5.');
+    return;
+  }
+
+  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+
+  if (!localTicket) {
+    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    return;
+  }
+
+  const existingRating = await getBotTicketRating(ticketId);
+
+  if (existingRating) {
+    await ctx.reply(`Оценка по заявке №${ticketId} уже сохранена: ${existingRating.rating}/5.`);
+    return;
+  }
+
+  const saved = await saveBotTicketRating(maxUserId, ticketId, normalizedRating);
+
+  if (!saved) {
+    const ratingAfterSave = await getBotTicketRating(ticketId);
+
+    await ctx.reply(
+      ratingAfterSave
+        ? `Оценка по заявке №${ticketId} уже сохранена: ${ratingAfterSave.rating}/5.`
+        : `Оценка по заявке №${ticketId} уже была сохранена.`
+    );
+
+    return;
+  }
+
+  await ctx.reply(`Спасибо! Оценка ${normalizedRating}/5 по заявке №${ticketId} сохранена.`);
 }
 
 async function finishTicketDraft(ctx, session, withFiles) {
@@ -664,7 +735,10 @@ export function registerTicketActions(bot) {
         '2. Описание.',
         '3. Прикрепление файлов.',
         '4. Создание заявки.',
-      ].join('\n')
+      ].join('\n'),
+      {
+        attachments: [helpKeyboard()],
+      }
     );
   });
 
@@ -734,5 +808,14 @@ export function registerTicketActions(bot) {
     });
 
     await ctx.reply(`Укажите, почему вы отклоняете решение по заявке №${ticketId}:`);
+  });
+
+  bot.action(/^ticket:rate:(\d+):([1-5])$/, async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const ticketId = Number(ctx.match[1]);
+    const rating = Number(ctx.match[2]);
+
+    await rateTicket(ctx, ticketId, rating);
   });
 }

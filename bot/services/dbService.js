@@ -70,6 +70,15 @@ export async function ensureDatabaseSchema() {
       UNIQUE KEY uniq_ticket_followup (glpi_ticket_id, glpi_followup_id)
     )`,
 
+    `CREATE TABLE IF NOT EXISTS bot_ticket_ratings (
+      id INT AUTO_INCREMENT PRIMARY KEY,
+      max_id BIGINT NOT NULL,
+      glpi_ticket_id INT NOT NULL,
+      rating TINYINT NOT NULL,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE KEY uniq_ticket_rating (glpi_ticket_id)
+    )`,
+
     'ALTER TABLE bot_user_tickets ADD COLUMN solution_notified TINYINT(1) DEFAULT 0',
     'ALTER TABLE bot_user_tickets ADD COLUMN closed_notified TINYINT(1) DEFAULT 0',
     'ALTER TABLE bot_ticket_followups ADD COLUMN content_hash CHAR(64) DEFAULT NULL',
@@ -131,25 +140,11 @@ export async function unblockMaxId(maxUserId) {
 
 export async function findGlpiUserByMaxId(maxUserId) {
   const [rows] = await pool.execute(
-    `SELECT
-       u.id,
-       u.name,
-       u.realname,
-       u.firstname,
-       COALESCE(user_entity.entity_id, 0) AS entity_id,
-       COALESCE(entity.name, 'Root') AS entity_name
-     FROM glpi_users u
-     LEFT JOIN (
-       SELECT
-         users_id,
-         COALESCE(MIN(NULLIF(entities_id, 0)), MIN(entities_id), 0) AS entity_id
-       FROM glpi_profiles_users
-       GROUP BY users_id
-     ) user_entity ON user_entity.users_id = u.id
-     LEFT JOIN glpi_entities entity ON entity.id = user_entity.entity_id
-     WHERE u.max_id = ?
-       AND u.is_active = 1
-       AND COALESCE(u.is_blocked, 0) = 0
+    `SELECT id, name, realname, firstname, entities_id AS entity_id
+     FROM glpi_users
+     WHERE max_id = ?
+       AND is_active = 1
+       AND COALESCE(is_blocked, 0) = 0
      LIMIT 1`,
     [maxUserId]
   );
@@ -166,18 +161,9 @@ export async function findGlpiUserAfterSdsImport(email) {
        u.name,
        u.realname,
        u.firstname,
-       COALESCE(user_entity.entity_id, 0) AS entity_id,
-       COALESCE(entity.name, 'Root') AS entity_name
+       u.entities_id AS entity_id
      FROM glpi_users u
      INNER JOIN glpi_useremails e ON e.users_id = u.id
-     LEFT JOIN (
-       SELECT
-         users_id,
-         COALESCE(MIN(NULLIF(entities_id, 0)), MIN(entities_id), 0) AS entity_id
-       FROM glpi_profiles_users
-       GROUP BY users_id
-     ) user_entity ON user_entity.users_id = u.id
-     LEFT JOIN glpi_entities entity ON entity.id = user_entity.entity_id
      WHERE LOWER(e.email) = ?
        AND u.is_active = 1
      ORDER BY u.id DESC
@@ -290,15 +276,7 @@ export async function saveBotUserTicket(maxUserId, glpiUserId, ticketId, title, 
 
 export async function getBotUserTicket(maxUserId, ticketId) {
   const [rows] = await pool.execute(
-    `SELECT
-       id,
-       max_id,
-       glpi_user_id,
-       glpi_ticket_id,
-       title,
-       status,
-       solution_notified,
-       closed_notified
+    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
        AND glpi_ticket_id = ?
@@ -311,15 +289,7 @@ export async function getBotUserTicket(maxUserId, ticketId) {
 
 export async function getBotUserTickets(maxUserId, limit = 10) {
   const [rows] = await pool.execute(
-    `SELECT
-       id,
-       max_id,
-       glpi_user_id,
-       glpi_ticket_id,
-       title,
-       status,
-       solution_notified,
-       closed_notified
+    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
      ORDER BY glpi_ticket_id DESC
@@ -332,15 +302,7 @@ export async function getBotUserTickets(maxUserId, limit = 10) {
 
 export async function getActiveBotUserTickets(limit = 50) {
   const [rows] = await pool.execute(
-    `SELECT
-       id,
-       max_id,
-       glpi_user_id,
-       glpi_ticket_id,
-       title,
-       status,
-       solution_notified,
-       closed_notified
+    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
      FROM bot_user_tickets
      WHERE status IS NULL OR status < 6
      ORDER BY id ASC
@@ -422,86 +384,6 @@ export async function isFollowupKnown(ticketId, followupId) {
   return rows.length > 0;
 }
 
-export async function deleteBotUserTicket(maxUserId, ticketId) {
-  await pool.execute(
-    `DELETE FROM bot_user_tickets
-     WHERE max_id = ?
-       AND glpi_ticket_id = ?`,
-    [maxUserId, ticketId]
-  );
-}
-
-
-
-export async function forceTicketRequesterInDb(ticketId, glpiUserId, entityId = null) {
-  console.warn(
-    'forceTicketRequesterInDb is deprecated and was skipped. ' +
-    'Requester must be set through GLPI API. ' +
-    `ticketId=${ticketId}, glpiUserId=${glpiUserId}, entityId=${entityId}`
-  );
-
-  return null;
-}
-
-export async function addGlpiTicketFollowupInDb(ticketId, glpiUserId, content, isPrivate = 0) {
-  console.warn(
-    'addGlpiTicketFollowupInDb is deprecated and was skipped. ' +
-    'Followup must be added through GLPI API. ' +
-    `ticketId=${ticketId}, glpiUserId=${glpiUserId}, isPrivate=${isPrivate}`
-  );
-
-  return null;
-}
-
-export async function updateGlpiTicketStatusInDb(ticketId, status) {
-  console.warn(
-    'updateGlpiTicketStatusInDb is deprecated and was skipped. ' +
-    'Ticket status must be changed through GLPI API. ' +
-    `ticketId=${ticketId}, status=${status}`
-  );
-
-  return null;
-}
-
-export async function attachGlpiDocumentToTicketInDb(ticketId, documentId) {
-  console.warn(
-    'attachGlpiDocumentToTicketInDb is deprecated and was skipped. ' +
-    'Document must be attached through GLPI API. ' +
-    `ticketId=${ticketId}, documentId=${documentId}`
-  );
-
-  return null;
-}
-
-export async function getGlpiTicketFromDb(ticketId) {
-  console.warn(
-    'getGlpiTicketFromDb is deprecated and was skipped. ' +
-    'Ticket must be read through GLPI API. ' +
-    `ticketId=${ticketId}`
-  );
-
-  return null;
-}
-
-export async function getGlpiTicketFollowupsFromDb(ticketId, limit = 20) {
-  console.warn(
-    'getGlpiTicketFollowupsFromDb is deprecated and was skipped. ' +
-    'Followups must be read through GLPI API. ' +
-    `ticketId=${ticketId}, limit=${limit}`
-  );
-
-  return [];
-}
-
-export async function getLatestTicketSolutionTextFromDb(ticketId) {
-  console.warn(
-    'getLatestTicketSolutionTextFromDb is deprecated and was skipped. ' +
-    'Solutions must be read through GLPI API. ' +
-    `ticketId=${ticketId}`
-  );
-
-  return '';
-}
 export async function deleteBotUserTicketByTicketId(ticketId) {
   const normalizedTicketId = Number(ticketId || 0);
 
@@ -518,4 +400,87 @@ export async function deleteBotUserTicketByTicketId(ticketId) {
     'DELETE FROM bot_user_tickets WHERE glpi_ticket_id = ?',
     [normalizedTicketId]
   );
+}
+
+export async function getBotTicketRating(ticketId) {
+  const normalizedTicketId = Number(ticketId || 0);
+
+  if (!normalizedTicketId) {
+    return null;
+  }
+
+  const [rows] = await pool.execute(
+    `SELECT id, max_id, glpi_ticket_id, rating, created_at
+     FROM bot_ticket_ratings
+     WHERE glpi_ticket_id = ?
+     LIMIT 1`,
+    [normalizedTicketId]
+  );
+
+  return rows[0] || null;
+}
+
+export async function saveBotTicketRating(maxUserId, ticketId, rating) {
+  const normalizedMaxUserId = Number(maxUserId || 0);
+  const normalizedTicketId = Number(ticketId || 0);
+  const normalizedRating = Number(rating || 0);
+
+  if (!normalizedMaxUserId) {
+    throw new Error(`Некорректный MAX ID: ${maxUserId}`);
+  }
+
+  if (!normalizedTicketId) {
+    throw new Error(`Некорректный номер заявки: ${ticketId}`);
+  }
+
+  if (!Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5) {
+    throw new Error(`Некорректная оценка: ${rating}`);
+  }
+
+  const [result] = await pool.execute(
+    `INSERT IGNORE INTO bot_ticket_ratings
+      (max_id, glpi_ticket_id, rating)
+     VALUES (?, ?, ?)`,
+    [normalizedMaxUserId, normalizedTicketId, normalizedRating]
+  );
+
+  return result.affectedRows === 1;
+}
+
+export async function forceTicketRequesterInDb(ticketId, glpiUserId) {
+  const connection = await pool.getConnection();
+
+  try {
+    await connection.beginTransaction();
+
+    await connection.execute(
+      `UPDATE glpi_tickets
+       SET users_id_recipient = ?,
+           date_mod = NOW()
+       WHERE id = ?`,
+      [glpiUserId, ticketId]
+    );
+
+    await connection.execute(
+      `DELETE FROM glpi_tickets_users
+       WHERE tickets_id = ?
+         AND type = 1`,
+      [ticketId]
+    );
+
+    await connection.execute(
+      `INSERT INTO glpi_tickets_users
+        (tickets_id, users_id, type, use_notification, alternative_email)
+       VALUES (?, ?, 1, 1, NULL)`,
+      [ticketId, glpiUserId]
+    );
+
+    await connection.commit();
+  } catch (error) {
+    await connection.rollback();
+    console.error('forceTicketRequesterInDb error:', error.message);
+    throw error;
+  } finally {
+    connection.release();
+  }
 }

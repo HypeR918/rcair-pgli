@@ -170,6 +170,16 @@ function normalizeEntityId(entityId) {
   return 0;
 }
 
+function normalizePositiveEntityId(entityId) {
+  const normalized = Number(entityId);
+
+  if (Number.isFinite(normalized) && normalized > 0) {
+    return normalized;
+  }
+
+  return 0;
+}
+
 function extractId(value) {
   if (value === null || value === undefined || value === '') {
     return 0;
@@ -180,6 +190,24 @@ function extractId(value) {
   }
 
   return Number(value || 0);
+}
+
+function extractEntityIdFromAnyValue(value) {
+  if (value === null || value === undefined || value === '') {
+    return 0;
+  }
+
+  if (typeof value === 'object') {
+    return normalizePositiveEntityId(
+      value.id ||
+      value.value ||
+      value.entities_id ||
+      value.entity_id ||
+      0
+    );
+  }
+
+  return normalizePositiveEntityId(value);
 }
 
 function isDuplicateRequesterError(error) {
@@ -339,7 +367,111 @@ export async function glpiMultipartRequest(method, path, form) {
   }
 }
 
-export async function uploadGlpiDocument(file) {
+async function getGlpiUserEntityIdFromUser(glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return 0;
+  }
+
+  try {
+    const user = await glpiApiRequest('get', `/User/${requesterId}`);
+
+    const entityId = extractEntityIdFromAnyValue(
+      user.entities_id ||
+      user.entity_id ||
+      user.default_entity ||
+      user.default_entities_id
+    );
+
+    if (entityId > 0) {
+      console.log('=== GLPI REQUESTER ENTITY FROM USER ===');
+      console.log('requesterId:', requesterId);
+      console.log('entityId:', entityId);
+      return entityId;
+    }
+  } catch (error) {
+    console.warn('getGlpiUserEntityIdFromUser warning:', error.message);
+  }
+
+  return 0;
+}
+
+async function getGlpiUserEntityIdFromProfiles(glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return 0;
+  }
+
+  try {
+    const profiles = await glpiApiRequest('get', `/User/${requesterId}/Profile_User`);
+
+    if (!Array.isArray(profiles)) {
+      return 0;
+    }
+
+    const normalizedProfiles = profiles
+      .map(profile => ({
+        entityId: extractEntityIdFromAnyValue(profile.entities_id || profile.entity_id),
+        isDefault: Number(profile.is_default || profile.is_default_profile || 0),
+        isRecursive: Number(profile.is_recursive || 0),
+      }))
+      .filter(profile => profile.entityId > 0);
+
+    if (normalizedProfiles.length === 0) {
+      return 0;
+    }
+
+    const defaultProfile = normalizedProfiles.find(profile => profile.isDefault === 1);
+    const selectedProfile = defaultProfile || normalizedProfiles[0];
+
+    console.log('=== GLPI REQUESTER ENTITY FROM PROFILE_USER ===');
+    console.log('requesterId:', requesterId);
+    console.log('entityId:', selectedProfile.entityId);
+    console.log('isDefault:', selectedProfile.isDefault);
+    console.log('isRecursive:', selectedProfile.isRecursive);
+
+    return selectedProfile.entityId;
+  } catch (error) {
+    console.warn('getGlpiUserEntityIdFromProfiles warning:', error.message);
+  }
+
+  return 0;
+}
+
+async function resolveRequesterEntityId(glpiUserId, preferredEntityId = null) {
+  const preferred = normalizePositiveEntityId(preferredEntityId);
+
+  if (preferred > 0) {
+    console.log('=== GLPI REQUESTER ENTITY FROM LOCAL DB ===');
+    console.log('requesterId:', glpiUserId);
+    console.log('entityId:', preferred);
+    return preferred;
+  }
+
+  const fromUser = await getGlpiUserEntityIdFromUser(glpiUserId);
+
+  if (fromUser > 0) {
+    return fromUser;
+  }
+
+  const fromProfiles = await getGlpiUserEntityIdFromProfiles(glpiUserId);
+
+  if (fromProfiles > 0) {
+    return fromProfiles;
+  }
+
+  const fallback = normalizeEntityId(env.GLPI_ENTITY_ID);
+
+  console.warn('=== GLPI REQUESTER ENTITY FALLBACK USED ===');
+  console.warn('requesterId:', glpiUserId);
+  console.warn('fallbackEntityId:', fallback);
+
+  return fallback;
+}
+
+export async function uploadGlpiDocument(file, entityId = null) {
   if (!file?.path) {
     throw new Error('Attachment file path is empty');
   }
@@ -365,12 +497,14 @@ export async function uploadGlpiDocument(file) {
 
   const filename = detected.filename;
   const mimeType = detected.mimeType;
+  const normalizedEntityId = normalizeEntityId(entityId);
 
   console.log('=== GLPI DOCUMENT UPLOAD START ===');
   console.log('localPath:', file.path);
   console.log('filename:', filename);
   console.log('mimeType:', mimeType);
   console.log('size:', stat.size);
+  console.log('documentEntityId:', normalizedEntityId);
 
   const form = new FormData();
 
@@ -378,6 +512,8 @@ export async function uploadGlpiDocument(file) {
     input: {
       name: filename,
       _filename: [filename],
+      entities_id: normalizedEntityId,
+      is_recursive: 0,
     },
   };
 
@@ -413,10 +549,12 @@ export async function uploadGlpiDocument(file) {
   console.log('=== GLPI DOCUMENT UPLOADED ===');
   console.log('documentId:', result.id);
   console.log('filename:', filename);
+  console.log('documentEntityId:', normalizedEntityId);
 
   return {
     documentId: result.id,
     filename,
+    entityId: normalizedEntityId,
   };
 }
 
@@ -433,14 +571,37 @@ export async function attachGlpiDocumentToTicket(ticketId, documentId) {
 export async function uploadAndAttachFilesToTicket(ticketId, files) {
   const uploaded = [];
 
-  for (const file of files || []) {
-    const { documentId, filename } = await uploadGlpiDocument(file);
+  if (!Array.isArray(files) || files.length === 0) {
+    return uploaded;
+  }
+
+  const ticket = await getGlpiTicket(ticketId);
+  const ticketEntityId = normalizeEntityId(ticket.entityId);
+
+  console.log('=== GLPI ATTACH FILES TO TICKET ===');
+  console.log('ticketId:', ticketId);
+  console.log('ticketEntityId:', ticketEntityId);
+  console.log('filesCount:', files.length);
+
+  for (const file of files) {
+    const { documentId, filename, entityId } = await uploadGlpiDocument(file, ticketEntityId);
+
+    console.log('=== GLPI DOCUMENT ITEM LINK START ===');
+    console.log('ticketId:', ticketId);
+    console.log('ticketEntityId:', ticketEntityId);
+    console.log('documentId:', documentId);
+    console.log('documentEntityId:', entityId);
 
     await attachGlpiDocumentToTicket(ticketId, documentId);
+
+    console.log('=== GLPI DOCUMENT ITEM LINKED ===');
+    console.log('ticketId:', ticketId);
+    console.log('documentId:', documentId);
 
     uploaded.push({
       documentId,
       filename,
+      entityId,
     });
   }
 
@@ -488,6 +649,50 @@ export async function updateGlpiTicket(ticketId, input) {
       ...input,
     },
   });
+}
+
+export async function ensureGlpiTicketEntity(ticketId, entityId) {
+  const normalizedEntityId = normalizePositiveEntityId(entityId);
+
+  if (!normalizedEntityId) {
+    console.warn('=== GLPI TICKET ENTITY SKIP ===');
+    console.warn('ticketId:', ticketId);
+    console.warn('entityId:', entityId);
+    return;
+  }
+
+  const ticketBefore = await getGlpiTicket(ticketId);
+  const currentEntityId = normalizeEntityId(ticketBefore.entityId);
+
+  console.log('=== GLPI ENSURE TICKET ENTITY START ===');
+  console.log('ticketId:', ticketId);
+  console.log('currentEntityId:', currentEntityId);
+  console.log('targetEntityId:', normalizedEntityId);
+
+  if (currentEntityId === normalizedEntityId) {
+    console.log('=== GLPI TICKET ENTITY ALREADY OK ===');
+    console.log('ticketId:', ticketId);
+    console.log('entityId:', normalizedEntityId);
+    return;
+  }
+
+  await updateGlpiTicket(ticketId, {
+    entities_id: normalizedEntityId,
+  });
+
+  const ticketAfter = await getGlpiTicket(ticketId);
+  const finalEntityId = normalizeEntityId(ticketAfter.entityId);
+
+  console.log('=== GLPI ENSURE TICKET ENTITY RESULT ===');
+  console.log('ticketId:', ticketId);
+  console.log('targetEntityId:', normalizedEntityId);
+  console.log('finalEntityId:', finalEntityId);
+
+  if (finalEntityId !== normalizedEntityId) {
+    throw new Error(
+      `GLPI ticket entity was not changed. Ticket ${ticketId}, expected ${normalizedEntityId}, got ${finalEntityId}`
+    );
+  }
 }
 
 export async function getGlpiTicketUsers(ticketId) {
@@ -845,15 +1050,25 @@ export async function createGlpiUserTicket(
 ) {
   const ticketTitle = truncateText(title, 250) || 'Заявка из MAX';
   const ticketContent = buildUserTicketContent(maxUserId, glpiUserId, description);
+  const requesterEntityId = await resolveRequesterEntityId(glpiUserId, options.entityId);
+
+  console.log('=== GLPI CREATE USER TICKET CONTEXT ===');
+  console.log('maxUserId:', maxUserId);
+  console.log('glpiUserId:', glpiUserId);
+  console.log('localEntityId:', options.entityId);
+  console.log('resolvedRequesterEntityId:', requesterEntityId);
 
   const ticketId = await createGlpiTicket(ticketTitle, ticketContent, {
     requesterId: glpiUserId,
-    entityId: options.entityId,
+    entityId: requesterEntityId,
     type: options.type ?? env.GLPI_DEFAULT_TICKET_TYPE,
     requestTypeId: options.requestTypeId ?? env.GLPI_DEFAULT_REQUEST_TYPE_ID,
     categoryId: options.categoryId ?? env.GLPI_DEFAULT_REQUEST_CATEGORY_ID,
     groupId: options.groupId ?? env.GLPI_DEFAULT_ASSIGN_GROUP_ID,
   });
+
+  await ensureGlpiTicketEntity(ticketId, requesterEntityId);
+  await ensureGlpiTicketRequester(ticketId, glpiUserId);
 
   return {
     ticketId,

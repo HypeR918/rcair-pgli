@@ -9,6 +9,12 @@ export function mainMenuKeyboard() {
   ]);
 }
 
+export function helpKeyboard() {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('В меню', 'menu:back')],
+  ]);
+}
+
 export function ticketActionsKeyboard(ticketId, status) {
   const normalizedStatus = Number(status || 0);
 
@@ -58,5 +64,18 @@ export function ticketFilesKeyboard(filesCount = 0) {
     [Keyboard.button.callback(createLabel, 'ticket:create_with_files')],
     [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
     [Keyboard.button.callback('Назад', 'menu:back')],
+  ]);
+}
+
+export function ticketRatingKeyboard(ticketId) {
+  return Keyboard.inlineKeyboard([
+    [
+      Keyboard.button.callback('1', `ticket:rate:${ticketId}:1`),
+      Keyboard.button.callback('2', `ticket:rate:${ticketId}:2`),
+      Keyboard.button.callback('3', `ticket:rate:${ticketId}:3`),
+      Keyboard.button.callback('4', `ticket:rate:${ticketId}:4`),
+      Keyboard.button.callback('5', `ticket:rate:${ticketId}:5`),
+    ],
+    [Keyboard.button.callback('В меню', 'menu:back')],
   ]);
 }
