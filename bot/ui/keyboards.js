@@ -10,11 +10,17 @@ export function mainMenuKeyboard() {
 }
 
 export function ticketActionsKeyboard(ticketId, status) {
-  const rows = [
-    [Keyboard.button.callback('Добавить комментарий', `ticket:comment:${ticketId}`)],
-  ];
+  const normalizedStatus = Number(status || 0);
 
-  if (Number(status) === 5) {
+  const rows = [];
+
+  if (normalizedStatus !== 6) {
+    rows.push([
+      Keyboard.button.callback('Добавить комментарий', `ticket:comment:${ticketId}`),
+    ]);
+  }
+
+  if (normalizedStatus === 5) {
     rows.push([
       Keyboard.button.callback('Принять решение', `ticket:accept:${ticketId}`),
       Keyboard.button.callback('Отклонить решение', `ticket:reject:${ticketId}`, {
@@ -42,21 +48,15 @@ export function ticketListKeyboard(tickets) {
 }
 
 export function ticketFilesKeyboard(filesCount = 0) {
-  const rows = [];
+  const normalizedFilesCount = Number(filesCount || 0);
 
-  if (Number(filesCount || 0) > 0) {
-    rows.push([
-      Keyboard.button.callback(`Создать заявку с файлами (${filesCount})`, 'ticket:create_with_files'),
-    ]);
-  }
+  const createLabel = normalizedFilesCount > 0
+    ? `Создать с файлами (${normalizedFilesCount})`
+    : 'Создать заявку';
 
-  rows.push([
-    Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback(createLabel, 'ticket:create_with_files')],
+    [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
+    [Keyboard.button.callback('Назад', 'menu:back')],
   ]);
-
-  rows.push([
-    Keyboard.button.callback('Отменить', 'menu:back', { intent: 'negative' }),
-  ]);
-
-  return Keyboard.inlineKeyboard(rows);
 }

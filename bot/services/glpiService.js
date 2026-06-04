@@ -170,6 +170,29 @@ function normalizeEntityId(entityId) {
   return 0;
 }
 
+function extractId(value) {
+  if (value === null || value === undefined || value === '') {
+    return 0;
+  }
+
+  if (typeof value === 'object') {
+    return Number(value.id || value.value || 0);
+  }
+
+  return Number(value || 0);
+}
+
+function isDuplicateRequesterError(error) {
+  const message = String(error?.message || '').toLowerCase();
+
+  return (
+    message.includes('duplicate') ||
+    message.includes('already') ||
+    message.includes('существ') ||
+    message.includes('дубликат')
+  );
+}
+
 export async function glpiInitSession() {
   if (!env.GLPI_API_USER_TOKEN) {
     throw new Error('GLPI_API_USER_TOKEN is not configured');
@@ -236,7 +259,9 @@ export async function glpiApiRequest(method, path, data = null) {
 
     if (res.status < 200 || res.status >= 300) {
       console.error('GLPI API request failed:', method, finalPath, res.status, res.data);
-      throw new Error(`GLPI API request failed: ${res.status}`);
+      throw new Error(
+        `GLPI API request failed: ${res.status} ${JSON.stringify(res.data)}`
+      );
     }
 
     return res.data;
@@ -303,7 +328,9 @@ export async function glpiMultipartRequest(method, path, form) {
 
     if (res.status < 200 || res.status >= 300) {
       console.error('GLPI multipart request failed:', method, finalPath, res.status, res.data);
-      throw new Error(`GLPI multipart request failed: ${res.status}`);
+      throw new Error(
+        `GLPI multipart request failed: ${res.status} ${JSON.stringify(res.data)}`
+      );
     }
 
     return res.data;
@@ -463,6 +490,38 @@ export async function updateGlpiTicket(ticketId, input) {
   });
 }
 
+export async function getGlpiTicketUsers(ticketId) {
+  try {
+    const result = await glpiApiRequest('get', `/Ticket/${ticketId}/Ticket_User`);
+
+    if (Array.isArray(result)) {
+      return result;
+    }
+
+    return [];
+  } catch (error) {
+    console.warn('getGlpiTicketUsers warning:', error.message);
+    return [];
+  }
+}
+
+export async function hasGlpiTicketRequester(ticketId, glpiUserId) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return false;
+  }
+
+  const users = await getGlpiTicketUsers(ticketId);
+
+  return users.some(item => {
+    const userId = extractId(item.users_id);
+    const type = Number(item.type || 0);
+
+    return userId === requesterId && type === 1;
+  });
+}
+
 export async function setGlpiTicketRequester(ticketId, glpiUserId) {
   const requesterId = Number(glpiUserId || 0);
 
@@ -484,7 +543,7 @@ export async function addGlpiTicketRequester(ticketId, glpiUserId) {
 
   return await glpiApiRequest('post', '/Ticket_User', {
     input: {
-      tickets_id: ticketId,
+      tickets_id: Number(ticketId),
       users_id: requesterId,
       type: 1,
       use_notification: 1,
@@ -499,28 +558,60 @@ export async function ensureGlpiTicketRequester(ticketId, glpiUserId) {
     return;
   }
 
-  try {
-    await setGlpiTicketRequester(ticketId, requesterId);
+  console.log('=== GLPI ENSURE REQUESTER START ===');
+  console.log('ticketId:', ticketId);
+  console.log('requesterId:', requesterId);
+
+  const alreadyBefore = await hasGlpiTicketRequester(ticketId, requesterId);
+
+  if (alreadyBefore) {
+    console.log('=== GLPI REQUESTER ALREADY EXISTS ===');
+    console.log('ticketId:', ticketId);
+    console.log('requesterId:', requesterId);
+    return;
+  }
+
+  await setGlpiTicketRequester(ticketId, requesterId);
+
+  const alreadyAfterUpdate = await hasGlpiTicketRequester(ticketId, requesterId);
+
+  if (alreadyAfterUpdate) {
     console.log('=== GLPI REQUESTER SET BY TICKET UPDATE ===');
     console.log('ticketId:', ticketId);
     console.log('requesterId:', requesterId);
     return;
-  } catch (error) {
-    console.warn('setGlpiTicketRequester warning:', error.message);
   }
 
   try {
     await addGlpiTicketRequester(ticketId, requesterId);
-    console.log('=== GLPI REQUESTER SET BY TICKET_USER ===');
-    console.log('ticketId:', ticketId);
-    console.log('requesterId:', requesterId);
   } catch (error) {
-    console.warn('addGlpiTicketRequester warning:', error.message);
+    if (isDuplicateRequesterError(error)) {
+      console.log('=== GLPI REQUESTER DUPLICATE IGNORED ===');
+      console.log('ticketId:', ticketId);
+      console.log('requesterId:', requesterId);
+      return;
+    }
+
+    throw error;
   }
+
+  const alreadyAfterAdd = await hasGlpiTicketRequester(ticketId, requesterId);
+
+  if (!alreadyAfterAdd) {
+    throw new Error(`GLPI requester was not attached to ticket ${ticketId}`);
+  }
+
+  console.log('=== GLPI REQUESTER SET BY TICKET_USER ===');
+  console.log('ticketId:', ticketId);
+  console.log('requesterId:', requesterId);
 }
 
 export async function createGlpiTicket(title, content, options = {}) {
-  const entityId = normalizeEntityId(env.GLPI_ENTITY_ID);
+  const entityId = normalizeEntityId(
+    options.entityId !== undefined
+      ? options.entityId
+      : env.GLPI_ENTITY_ID
+  );
 
   const input = {
     name: title,
@@ -535,16 +626,6 @@ export async function createGlpiTicket(title, content, options = {}) {
   const requesterId = Number(options.requesterId || 0);
 
   if (requesterId > 0) {
-    /*
-      Заявка создаётся токеном сервисного аккаунта GLPI_API_USER_TOKEN.
-      Автором создания остаётся сервисный аккаунт.
-
-      Инициатор запроса — пользователь, который авторизовался в MAX-боте.
-      Для этого передаём _users_id_requester.
-
-      users_id_recipient не ставим пользователем, потому что в твоём GLPI это
-      попадает в "Автор", а не в нужное поле "Инициатор запроса".
-    */
     input._users_id_requester = requesterId;
   }
 
@@ -767,6 +848,7 @@ export async function createGlpiUserTicket(
 
   const ticketId = await createGlpiTicket(ticketTitle, ticketContent, {
     requesterId: glpiUserId,
+    entityId: options.entityId,
     type: options.type ?? env.GLPI_DEFAULT_TICKET_TYPE,
     requestTypeId: options.requestTypeId ?? env.GLPI_DEFAULT_REQUEST_TYPE_ID,
     categoryId: options.categoryId ?? env.GLPI_DEFAULT_REQUEST_CATEGORY_ID,

@@ -431,29 +431,7 @@ export async function deleteBotUserTicket(maxUserId, ticketId) {
   );
 }
 
-export async function deleteBotUserTicketByTicketId(ticketId) {
-  await pool.execute(
-    `DELETE FROM bot_user_tickets
-     WHERE glpi_ticket_id = ?`,
-    [ticketId]
-  );
-}
 
-/*
-  Ниже оставлены безопасные заглушки для старых импортов.
-
-  В новой схеме с сервисным аккаунтом MAX Bot эти функции НЕ должны
-  использоваться в рабочем пути.
-
-  Почему:
-  - requester задаётся через GLPI API в glpiService.js;
-  - followup пишется через GLPI API;
-  - документы привязываются через GLPI API;
-  - статус заявки меняется через GLPI API.
-
-  Если где-то в старом файле случайно остался импорт/вызов,
-  бот не упадёт, но в логах будет видно, что надо удалить старый вызов.
-*/
 
 export async function forceTicketRequesterInDb(ticketId, glpiUserId, entityId = null) {
   console.warn(
@@ -523,4 +501,21 @@ export async function getLatestTicketSolutionTextFromDb(ticketId) {
   );
 
   return '';
+}
+export async function deleteBotUserTicketByTicketId(ticketId) {
+  const normalizedTicketId = Number(ticketId || 0);
+
+  if (!normalizedTicketId) {
+    return;
+  }
+
+  await pool.execute(
+    'DELETE FROM bot_ticket_followups WHERE glpi_ticket_id = ?',
+    [normalizedTicketId]
+  );
+
+  await pool.execute(
+    'DELETE FROM bot_user_tickets WHERE glpi_ticket_id = ?',
+    [normalizedTicketId]
+  );
 }

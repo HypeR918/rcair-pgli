@@ -17,7 +17,6 @@ export const State = {
   WAIT_NEW_TICKET_DESCRIPTION: 'WAIT_NEW_TICKET_DESCRIPTION',
   WAIT_NEW_TICKET_FILES: 'WAIT_NEW_TICKET_FILES',
 
-  // Оставляем для совместимости, если где-то осталась старая логика.
   WAIT_NEW_TICKET_CONTENT: 'WAIT_NEW_TICKET_CONTENT',
 
   WAIT_TICKET_COMMENT: 'WAIT_TICKET_COMMENT',

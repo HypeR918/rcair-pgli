@@ -1,4 +1,4 @@
-import { State } from '../utils/constants.js';
+import { State, GlpiTicketStatus } from '../utils/constants.js';
 import {
   stripHtml,
   truncateText,
@@ -18,8 +18,10 @@ import {
   getBotUserTickets,
   markFollowupAsKnown,
   updateBotUserTicketStatus,
+  markTicketSolutionNotified,
   markTicketClosedNotified,
   resetTicketSolutionNotified,
+  deleteBotUserTicketByTicketId,
 } from '../services/dbService.js';
 
 import {
@@ -62,6 +64,57 @@ async function cancelDraftFiles(session) {
   await cleanupDownloadedFiles(files);
 }
 
+function isGlpiTicketNotFoundError(error) {
+  const message = String(error?.message || '').toLowerCase();
+
+  if (message.includes('error_right_missing')) {
+    return false;
+  }
+
+  return (
+    message.includes('404') ||
+    message.includes('error_item_not_found') ||
+    message.includes('item not found') ||
+    message.includes('not found') ||
+    message.includes('не найден') ||
+    message.includes('не существует')
+  );
+}
+
+async function deleteMissingTicketAndReply(ctx, ticketId) {
+  await deleteBotUserTicketByTicketId(ticketId);
+
+  await ctx.reply(
+    `Заявка №${ticketId} больше не существует в GLPI. Я убрал её из списка.`
+  );
+}
+
+async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
+  const maxUserId = ctx.user.user_id;
+  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+
+  if (!localTicket) {
+    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    return null;
+  }
+
+  try {
+    const glpiTicket = await getGlpiTicket(ticketId);
+
+    return {
+      localTicket,
+      glpiTicket,
+    };
+  } catch (error) {
+    if (isGlpiTicketNotFoundError(error)) {
+      await deleteMissingTicketAndReply(ctx, ticketId);
+      return null;
+    }
+
+    throw error;
+  }
+}
+
 export async function createUserTicket(ctx, title, description, files = []) {
   const maxUserId = ctx.user.user_id;
   const user = await findGlpiUserByMaxId(maxUserId);
@@ -72,23 +125,14 @@ export async function createUserTicket(ctx, title, description, files = []) {
     return;
   }
 
-  /*
-    Заявка создаётся через GLPI API от сервисного аккаунта MAX Bot.
-
-    Автор создания:
-      сервисный аккаунт, чей токен указан в GLPI_API_USER_TOKEN.
-
-    Инициатор запроса:
-      пользователь GLPI, который авторизовался в MAX-боте.
-
-    Организацию пользователя сюда НЕ передаём.
-    Заявка создаётся в env.GLPI_ENTITY_ID, где у сервисного аккаунта есть права.
-  */
   const { ticketId, title: ticketTitle } = await createGlpiUserTicket(
     maxUserId,
     user.id,
     title,
-    description
+    description,
+    {
+      entityId: user.entity_id,
+    }
   );
 
   let uploadedFiles = [];
@@ -105,7 +149,7 @@ export async function createUserTicket(ctx, title, description, files = []) {
     await cleanupDownloadedFiles(files);
   }
 
-  await saveBotUserTicket(maxUserId, user.id, ticketId, ticketTitle, 1);
+  await saveBotUserTicket(maxUserId, user.id, ticketId, ticketTitle, GlpiTicketStatus.NEW);
 
   setSession(maxUserId, {
     state: State.IDLE,
@@ -123,7 +167,7 @@ export async function createUserTicket(ctx, title, description, files = []) {
   }
 
   await ctx.reply(parts.join('\n'), {
-    attachments: [ticketActionsKeyboard(ticketId, 1)],
+    attachments: [ticketActionsKeyboard(ticketId, GlpiTicketStatus.NEW)],
   });
 }
 
@@ -149,17 +193,29 @@ export async function showUserTickets(ctx) {
 
   for (const ticket of tickets) {
     try {
-      const glpiTicket = await getGlpiTicket(ticket.glpi_ticket_id);
+      const ticketId = Number(ticket.glpi_ticket_id || 0);
+
+      if (!ticketId) {
+        continue;
+      }
+
+      const glpiTicket = await getGlpiTicket(ticketId);
       const status = Number(glpiTicket.status || ticket.status || 0);
       const title = stripHtml(glpiTicket.name || ticket.title || '');
 
-      await updateBotUserTicketStatus(ticket.glpi_ticket_id, status, title);
+      await updateBotUserTicketStatus(ticketId, status, title);
 
       keyboardItems.push({
-        ticketId: ticket.glpi_ticket_id,
+        ticketId,
         statusLabel: getTicketStatusLabel(status),
       });
     } catch (err) {
+      if (isGlpiTicketNotFoundError(err)) {
+        await deleteBotUserTicketByTicketId(ticket.glpi_ticket_id);
+        console.log('Deleted unavailable local ticket:', ticket.glpi_ticket_id);
+        continue;
+      }
+
       console.error('showUserTickets item error:', ticket.glpi_ticket_id, err.message);
 
       keyboardItems.push({
@@ -169,21 +225,29 @@ export async function showUserTickets(ctx) {
     }
   }
 
+  if (keyboardItems.length === 0) {
+    await ctx.reply(
+      'Актуальных заявок не найдено. Старые несуществующие заявки убраны из списка.',
+      {
+        attachments: [mainMenuKeyboard()],
+      }
+    );
+    return;
+  }
+
   await ctx.reply('Выберите заявку:', {
     attachments: [ticketListKeyboard(keyboardItems)],
   });
 }
 
 export async function showTicketDetails(ctx, ticketId) {
-  const maxUserId = ctx.user.user_id;
-  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+  const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-  if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+  if (!checked) {
     return;
   }
 
-  const ticket = await getGlpiTicket(ticketId);
+  const { localTicket, glpiTicket: ticket } = checked;
   const status = Number(ticket.status || 0);
   const title = stripHtml(ticket.name || localTicket.title || `Заявка №${ticketId}`);
   const content = stripHtml(ticket.content || '');
@@ -198,7 +262,7 @@ export async function showTicketDetails(ctx, ticketId) {
     .filter(Boolean);
 
   const solutionText =
-    status === 5 || status === 6
+    status === GlpiTicketStatus.SOLVED || status === GlpiTicketStatus.CLOSED
       ? await getLatestTicketSolutionText(ticketId)
       : '';
 
@@ -220,7 +284,7 @@ export async function showTicketDetails(ctx, ticketId) {
   }
 
   if (solutionText) {
-    parts.push('', 'Решение:', truncateText(solutionText, 1000));
+    parts.push('', 'Предложенное решение:', truncateText(solutionText, 1000));
   }
 
   await ctx.reply(parts.join('\n'), {
@@ -230,13 +294,14 @@ export async function showTicketDetails(ctx, ticketId) {
 
 export async function addUserCommentToTicket(ctx, ticketId, commentText, files = []) {
   const maxUserId = ctx.user.user_id;
-  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+  const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-  if (!localTicket) {
+  if (!checked) {
     await cleanupDownloadedFiles(files);
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
     return;
   }
+
+  const { localTicket } = checked;
 
   const content = [
     'Комментарий пользователя из MAX:',
@@ -285,12 +350,13 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
 
 export async function acceptTicketSolution(ctx, ticketId) {
   const maxUserId = ctx.user.user_id;
-  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+  const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-  if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+  if (!checked) {
     return;
   }
+
+  const { localTicket } = checked;
 
   const { followupId, content } = await acceptGlpiTicketSolution(ticketId, maxUserId);
 
@@ -298,20 +364,27 @@ export async function acceptTicketSolution(ctx, ticketId) {
     await markFollowupAsKnown(ticketId, followupId, content, true);
   }
 
-  await updateBotUserTicketStatus(ticketId, 6);
+  await markTicketSolutionNotified(ticketId);
+  await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.CLOSED);
   await markTicketClosedNotified(ticketId);
+
+  setSession(maxUserId, {
+    state: State.IDLE,
+    glpiUserId: localTicket.glpi_user_id,
+  });
 
   await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта.`);
 }
 
 export async function rejectTicketSolution(ctx, ticketId, reason) {
   const maxUserId = ctx.user.user_id;
-  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+  const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-  if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+  if (!checked) {
     return;
   }
+
+  const { localTicket } = checked;
 
   const { followupId, content } = await rejectGlpiTicketSolution(ticketId, reason);
 
@@ -319,7 +392,7 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
     await markFollowupAsKnown(ticketId, followupId, content, true);
   }
 
-  await updateBotUserTicketStatus(ticketId, 2);
+  await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.PROCESSING);
   await resetTicketSolutionNotified(ticketId);
 
   setSession(maxUserId, {
@@ -354,16 +427,17 @@ async function finishTicketDraft(ctx, session, withFiles) {
 
 export async function handleTicketTextState(ctx, session, text) {
   const maxUserId = ctx.user.user_id;
+  const safeText = String(text || '').trim();
 
   if (session.state === State.WAIT_NEW_TICKET_TITLE) {
-    if (text.length < 3) {
+    if (safeText.length < 3) {
       await ctx.reply('Заголовок слишком короткий. Введите понятный заголовок заявки:');
       return true;
     }
 
     session.state = State.WAIT_NEW_TICKET_DESCRIPTION;
     session.ticketDraft = {
-      title: text,
+      title: safeText,
       description: '',
       files: [],
     };
@@ -375,7 +449,7 @@ export async function handleTicketTextState(ctx, session, text) {
   }
 
   if (session.state === State.WAIT_NEW_TICKET_DESCRIPTION) {
-    if (text.length < 5) {
+    if (safeText.length < 5) {
       await ctx.reply('Описание слишком короткое. Опишите обращение подробнее:');
       return true;
     }
@@ -383,7 +457,7 @@ export async function handleTicketTextState(ctx, session, text) {
     session.state = State.WAIT_NEW_TICKET_FILES;
     session.ticketDraft = {
       ...(session.ticketDraft || {}),
-      description: text,
+      description: safeText,
       files: [],
     };
 
@@ -421,7 +495,7 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    const normalizedText = text.toLowerCase();
+    const normalizedText = safeText.toLowerCase();
 
     if (['создать', 'готово', 'готов', 'без файлов', 'пропустить'].includes(normalizedText)) {
       await finishTicketDraft(
@@ -440,12 +514,15 @@ export async function handleTicketTextState(ctx, session, text) {
   }
 
   if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
-    if (text.length < 5) {
+    const incomingFiles = await collectDownloadedMaxAttachments(ctx);
+
+    if (safeText.length < 5) {
+      await cleanupDownloadedFiles(incomingFiles);
       await ctx.reply('Опишите обращение подробнее:');
       return true;
     }
 
-    await createUserTicket(ctx, truncateText(text, 80), text, []);
+    await createUserTicket(ctx, truncateText(safeText, 80), safeText, incomingFiles);
     return true;
   }
 
@@ -459,13 +536,13 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    if (text.length < 2 && files.length === 0) {
+    if (safeText.length < 2 && files.length === 0) {
       await cleanupDownloadedFiles(files);
       await ctx.reply('Введите текст комментария или приложите файл:');
       return true;
     }
 
-    await addUserCommentToTicket(ctx, session.ticketId, text, files);
+    await addUserCommentToTicket(ctx, session.ticketId, safeText, files);
     return true;
   }
 
@@ -476,12 +553,12 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    if (text.length < 3) {
+    if (safeText.length < 3) {
       await ctx.reply('Укажите причину отклонения решения:');
       return true;
     }
 
-    await rejectTicketSolution(ctx, session.ticketId, text);
+    await rejectTicketSolution(ctx, session.ticketId, safeText);
     return true;
   }
 
@@ -615,12 +692,13 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
-    const localTicket = await getBotUserTicket(maxUserId, ticketId);
+    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-    if (!localTicket) {
-      await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    if (!checked) {
       return;
     }
+
+    const { localTicket } = checked;
 
     setSession(maxUserId, {
       state: State.WAIT_TICKET_COMMENT,
@@ -641,12 +719,13 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
-    const localTicket = await getBotUserTicket(maxUserId, ticketId);
+    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-    if (!localTicket) {
-      await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    if (!checked) {
       return;
     }
+
+    const { localTicket } = checked;
 
     setSession(maxUserId, {
       state: State.WAIT_REJECT_SOLUTION_REASON,
