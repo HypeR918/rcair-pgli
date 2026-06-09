@@ -1,0 +1,28 @@
+{
+  "name": "max",
+  "version": "1.0.0",
+  "description": "",
+  "main": "bot.js",
+  "scripts": {
+    "start": "node bot.js",
+    "start:importer": "node glpi-importer.js",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "module",
+  "dependencies": {
+    "@maxhub/max-bot-api": "^0.2.2",
+    "axios": "^1.16.1",
+    "axios-cookiejar-support": "^7.0.0",
+    "dotenv": "^17.4.2",
+    "form-data": "^4.0.5",
+    "ldapts": "^8.1.8",
+    "mime-types": "^3.0.2",
+    "mysql2": "^3.22.3",
+    "nodemailer": "^8.0.8",
+    "socks-proxy-agent": "^10.0.0",
+    "tough-cookie": "^6.0.1"
+  }
+}
