@@ -96,7 +96,7 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(verifiedEmail);
 
-  await ctx.reply('Проверяю наличие учетной записи в каталоге пользователей корпоративных сервисов Правительства Томской области...');
+  await ctx.reply('Проверяю наличие учетной записи в каталоге пользователей...');
 
   const importResult = await importUserFromSdsViaGlpi(normalizedEmail);
 
