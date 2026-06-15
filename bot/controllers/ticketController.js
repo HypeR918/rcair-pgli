@@ -47,7 +47,8 @@ import {
   helpKeyboard,
   ticketActionsKeyboard,
   ticketListKeyboard,
-  ticketFilesKeyboard,
+  ticketDraftKeyboard,
+  ticketAttachKeyboard,
 } from '../ui/keyboards.js';
 
 function getDraftFiles(session) {
@@ -528,13 +529,12 @@ export async function handleTicketTextState(ctx, session, text) {
 
     await ctx.reply(
       [
-        'Теперь можно прикрепить фото или файлы.',
+        'Описание принято.',
         '',
-        'Отправьте файлы одним или несколькими сообщениями.',
-        'Когда закончите — нажмите кнопку создания заявки.',
+        'Хотите прикрепить файлы к заявке?',
       ].join('\n'),
       {
-        attachments: [ticketFilesKeyboard(0)],
+        attachments: [ticketAttachKeyboard()],
       }
     );
 
@@ -551,8 +551,8 @@ export async function handleTicketTextState(ctx, session, text) {
 
       setSession(maxUserId, session);
 
-      await ctx.reply(`Файлы добавлены: ${draftFiles.length}.`, {
-        attachments: [ticketFilesKeyboard(draftFiles.length)],
+      await ctx.reply(`Файл добавлен: ${draftFiles.length}.`, {
+        attachments: [ticketDraftKeyboard(draftFiles.length)],
       });
 
       return true;
@@ -569,8 +569,8 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    await ctx.reply('Прикрепите файл или нажмите кнопку создания заявки.', {
-      attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
+    await ctx.reply('Отправьте файл или нажмите кнопку.', {
+      attachments: [ticketDraftKeyboard(getDraftFiles(session).length)],
     });
 
     return true;
@@ -638,24 +638,54 @@ export function registerTicketActions(bot) {
     if (!ctx.user || !ctx.user.user_id) return;
 
     const maxUserId = ctx.user.user_id;
-    const user = await findGlpiUserByMaxId(maxUserId);
 
-    if (!user) {
-      await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+    try {
+      const user = await findGlpiUserByMaxId(maxUserId);
+
+      if (!user) {
+        await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+        return;
+      }
+
+      setSession(maxUserId, {
+        state: State.WAIT_NEW_TICKET_TITLE,
+        glpiUserId: user.id,
+        ticketDraft: {
+          title: '',
+          description: '',
+          files: [],
+        },
+      });
+
+      await ctx.reply('Введите заголовок заявки:');
+    } catch (error) {
+      console.error('menu:new error:', error);
+      await ctx.reply('Ошибка. Попробуйте позже.');
+    }
+  });
+
+  bot.action('ticket:start_files', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
+
+    if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
+      await ctx.reply('Черновик заявки не найден.', {
+        attachments: [mainMenuKeyboard()],
+      });
       return;
     }
 
-    setSession(maxUserId, {
-      state: State.WAIT_NEW_TICKET_TITLE,
-      glpiUserId: user.id,
-      ticketDraft: {
-        title: '',
-        description: '',
-        files: [],
-      },
-    });
-
-    await ctx.reply('Введите заголовок заявки:');
+    await ctx.reply(
+      [
+        'Отправьте фото или файлы одним или несколькими сообщениями.',
+        'Когда закончите — нажмите «Создать» или «Создать без файлов».',
+      ].join('\n'),
+      {
+        attachments: [ticketDraftKeyboard(getDraftFiles(session).length)],
+      }
+    );
   });
 
   bot.action('ticket:create_with_files', async ctx => {
@@ -665,11 +695,21 @@ export function registerTicketActions(bot) {
     const session = getSession(maxUserId);
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
-      await ctx.reply('Нет активного черновика заявки.');
+      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась. Начните создание заявки заново.', {
+        attachments: [mainMenuKeyboard()],
+      });
       return;
     }
 
-    await finishTicketDraft(ctx, session, true);
+    try {
+      await finishTicketDraft(ctx, session, true);
+    } catch (error) {
+      console.error('ticket:create_with_files error:', error);
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
+        attachments: [mainMenuKeyboard()],
+      });
+    }
   });
 
   bot.action('ticket:create_without_files', async ctx => {
@@ -679,43 +719,64 @@ export function registerTicketActions(bot) {
     const session = getSession(maxUserId);
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
-      await ctx.reply('Нет активного черновика заявки.');
+      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась. Начните создание заявки заново.', {
+        attachments: [mainMenuKeyboard()],
+      });
       return;
     }
 
-    await finishTicketDraft(ctx, session, false);
+    try {
+      await finishTicketDraft(ctx, session, false);
+    } catch (error) {
+      console.error('ticket:create_without_files error:', error);
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
+        attachments: [mainMenuKeyboard()],
+      });
+    }
   });
 
   bot.action('menu:list', async ctx => {
-    await showUserTickets(ctx);
+    try {
+      await showUserTickets(ctx);
+    } catch (error) {
+      console.error('menu:list error:', error);
+      await ctx.reply('Ошибка при загрузке заявок. Попробуйте позже.');
+    }
   });
 
   bot.action('menu:back', async ctx => {
     if (!ctx.user || !ctx.user.user_id) return;
 
     const maxUserId = ctx.user.user_id;
-    const session = getSession(maxUserId);
 
-    if (session?.state === State.WAIT_NEW_TICKET_FILES) {
-      await cancelDraftFiles(session);
+    try {
+      const session = getSession(maxUserId);
+
+      if (session?.state === State.WAIT_NEW_TICKET_FILES) {
+        await cancelDraftFiles(session);
+      }
+
+      const user = await findGlpiUserByMaxId(maxUserId);
+
+      if (user) {
+        setSession(maxUserId, {
+          state: State.IDLE,
+          glpiUserId: user.id,
+        });
+
+        await ctx.reply('Главное меню:', {
+          attachments: [mainMenuKeyboard()],
+        });
+
+        return;
+      }
+
+      await ctx.reply('Отправьте /start для входа.');
+    } catch (error) {
+      console.error('menu:back error:', error);
+      await ctx.reply('Отправьте /start для входа.');
     }
-
-    const user = await findGlpiUserByMaxId(maxUserId);
-
-    if (user) {
-      setSession(maxUserId, {
-        state: State.IDLE,
-        glpiUserId: user.id,
-      });
-
-      await ctx.reply('Главное меню:', {
-        attachments: [mainMenuKeyboard()],
-      });
-
-      return;
-    }
-
-    await ctx.reply('Отправьте /start для входа.');
   });
 
   bot.action('menu:help', async ctx => {
@@ -759,7 +820,12 @@ export function registerTicketActions(bot) {
 
   bot.action(/^ticket:open:(\d+)$/, async ctx => {
     const ticketId = Number(ctx.match[1]);
-    await showTicketDetails(ctx, ticketId);
+    try {
+      await showTicketDetails(ctx, ticketId);
+    } catch (error) {
+      console.error('ticket:open error:', error);
+      await ctx.reply('Ошибка при загрузке заявки. Попробуйте позже.');
+    }
   });
 
   bot.action(/^ticket:comment:(\d+)$/, async ctx => {
@@ -767,26 +833,37 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
-    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-    if (!checked) {
-      return;
+    try {
+      const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
+
+      if (!checked) {
+        return;
+      }
+
+      const { localTicket } = checked;
+
+      setSession(maxUserId, {
+        state: State.WAIT_TICKET_COMMENT,
+        ticketId,
+        glpiUserId: localTicket.glpi_user_id,
+      });
+
+      await ctx.reply(`Введите комментарий для заявки №${ticketId}. Можно приложить фото или файл.`);
+    } catch (error) {
+      console.error('ticket:comment error:', error);
+      await ctx.reply('Ошибка. Попробуйте позже.');
     }
-
-    const { localTicket } = checked;
-
-    setSession(maxUserId, {
-      state: State.WAIT_TICKET_COMMENT,
-      ticketId,
-      glpiUserId: localTicket.glpi_user_id,
-    });
-
-    await ctx.reply(`Введите комментарий для заявки №${ticketId}. Можно приложить фото или файл.`);
   });
 
   bot.action(/^ticket:accept:(\d+)$/, async ctx => {
     const ticketId = Number(ctx.match[1]);
-    await acceptTicketSolution(ctx, ticketId);
+    try {
+      await acceptTicketSolution(ctx, ticketId);
+    } catch (error) {
+      console.error('ticket:accept error:', error);
+      await ctx.reply('Ошибка при принятии решения. Попробуйте позже.');
+    }
   });
 
   bot.action(/^ticket:reject:(\d+)$/, async ctx => {
@@ -794,21 +871,27 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
-    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
-    if (!checked) {
-      return;
+    try {
+      const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
+
+      if (!checked) {
+        return;
+      }
+
+      const { localTicket } = checked;
+
+      setSession(maxUserId, {
+        state: State.WAIT_REJECT_SOLUTION_REASON,
+        ticketId,
+        glpiUserId: localTicket.glpi_user_id,
+      });
+
+      await ctx.reply(`Укажите, почему вы отклоняете решение по заявке №${ticketId}:`);
+    } catch (error) {
+      console.error('ticket:reject error:', error);
+      await ctx.reply('Ошибка. Попробуйте позже.');
     }
-
-    const { localTicket } = checked;
-
-    setSession(maxUserId, {
-      state: State.WAIT_REJECT_SOLUTION_REASON,
-      ticketId,
-      glpiUserId: localTicket.glpi_user_id,
-    });
-
-    await ctx.reply(`Укажите, почему вы отклоняете решение по заявке №${ticketId}:`);
   });
 
   bot.action(/^ticket:rate:(\d+):([1-5])$/, async ctx => {
@@ -817,6 +900,11 @@ export function registerTicketActions(bot) {
     const ticketId = Number(ctx.match[1]);
     const rating = Number(ctx.match[2]);
 
-    await rateTicket(ctx, ticketId, rating);
+    try {
+      await rateTicket(ctx, ticketId, rating);
+    } catch (error) {
+      console.error('ticket:rate error:', error);
+      await ctx.reply('Ошибка при сохранении оценки. Попробуйте позже.');
+    }
   });
 }

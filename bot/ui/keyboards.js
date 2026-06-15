@@ -57,22 +57,32 @@ export function ticketListKeyboard(tickets) {
   return Keyboard.inlineKeyboard(rows);
 }
 
-export function ticketFilesKeyboard(filesCount = 0) {
+export function ticketDraftKeyboard(filesCount = 0) {
   const normalizedFilesCount = Number(filesCount || 0);
-
   const rows = [];
 
   if (normalizedFilesCount > 0) {
+    const fileWord = normalizedFilesCount > 1
+      ? (normalizedFilesCount < 5 ? 'файла' : 'файлов')
+      : 'файл';
     rows.push([
-      Keyboard.button.callback(`Создать (${normalizedFilesCount} файл${normalizedFilesCount > 1 ? (normalizedFilesCount < 5 ? 'а' : 'ов') : ''})`, 'ticket:create_with_files'),
-    ]);
-  } else {
-    rows.push([
-      Keyboard.button.callback('Создать заявку', 'ticket:create_with_files'),
+      Keyboard.button.callback(`Создать (${normalizedFilesCount} ${fileWord})`, 'ticket:create_with_files'),
     ]);
   }
+
+  rows.push([
+    Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
+  ]);
 
   rows.push([Keyboard.button.callback('Назад', 'menu:back')]);
 
   return Keyboard.inlineKeyboard(rows);
+}
+
+export function ticketAttachKeyboard() {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Прикрепить файлы', 'ticket:start_files')],
+    [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
+    [Keyboard.button.callback('Назад', 'menu:back')],
+  ]);
 }

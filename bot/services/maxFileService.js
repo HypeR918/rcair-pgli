@@ -181,16 +181,20 @@ export async function collectDownloadedMaxAttachments(ctx) {
     const url = findUrlDeep(payload) || findUrlDeep(attachment);
 
     if (!url) {
-      console.log('MAX attachment has no downloadable URL. Raw attachment:');
-      console.log(JSON.stringify(attachment, null, 2));
+      console.warn('MAX attachment has no downloadable URL. Type:', attachment.type, 'Payload keys:', Object.keys(payload || {}));
+      console.warn('Raw attachment:', JSON.stringify(attachment, null, 2));
       continue;
     }
 
     const filename = guessFilename(attachment, index);
     const mimeType = guessMimeType(attachment);
 
-    const file = await downloadFile(url, filename, mimeType);
-    files.push(file);
+    try {
+      const file = await downloadFile(url, filename, mimeType);
+      files.push(file);
+    } catch (error) {
+      console.error('MAX attachment download error:', error.message, 'URL:', url);
+    }
   }
 
   return files;

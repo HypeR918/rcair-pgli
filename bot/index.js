@@ -104,3 +104,11 @@ async function shutdown() {
 
 process.on('SIGINT', shutdown);
 process.on('SIGTERM', shutdown);
+
+process.on('uncaughtException', error => {
+  console.error('UncaughtException:', error);
+});
+
+process.on('unhandledRejection', reason => {
+  console.error('UnhandledRejection:', reason);
+});
