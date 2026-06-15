@@ -48,7 +48,6 @@ import {
   ticketActionsKeyboard,
   ticketListKeyboard,
   ticketFilesKeyboard,
-  ticketRatingKeyboard,
 } from '../ui/keyboards.js';
 
 function getDraftFiles(session) {
@@ -301,7 +300,8 @@ export async function showTicketDetails(ctx, ticketId) {
   }
 
   if (rating) {
-    parts.push('', `Оценка пользователя: ${rating.rating}/5`);
+    const ratingLabel = rating.rating === 1 ? 'Удовлетворительно' : 'Неудовлетворительно';
+    parts.push('', `Оценка пользователя: ${ratingLabel}`);
   }
 
   await ctx.reply(parts.join('\n'), {
@@ -385,28 +385,18 @@ export async function acceptTicketSolution(ctx, ticketId) {
   await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.CLOSED);
   await markTicketClosedNotified(ticketId);
 
+  const existingRating = await getBotTicketRating(ticketId);
+
+  if (!existingRating) {
+    await saveBotTicketRating(maxUserId, ticketId, 1);
+  }
+
   setSession(maxUserId, {
     state: State.IDLE,
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  const existingRating = await getBotTicketRating(ticketId);
-
-  if (existingRating) {
-    await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта.`);
-    return;
-  }
-
-  await ctx.reply(
-    [
-      `Решение по заявке №${ticketId} принято. Заявка закрыта.`,
-      '',
-      'Оцените, пожалуйста, работу по заявке от 1 до 5.',
-    ].join('\n'),
-    {
-      attachments: [ticketRatingKeyboard(ticketId)],
-    }
-  );
+  await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта. Оценка: Удовлетворительно.`);
 }
 
 export async function rejectTicketSolution(ctx, ticketId, reason) {
@@ -631,58 +621,12 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    await rejectTicketSolution(ctx, session.ticketId, safeText);
-    return true;
-  }
-
-  if (session.state === State.WAIT_NEGATIVE_RATING_REASON) {
-    if (!session.ticketId) {
-      setSession(maxUserId, { state: State.IDLE });
-      await ctx.reply('Заявка не выбрана.');
-      return true;
-    }
-
-    if (safeText.length < 3) {
-      await ctx.reply('Укажите причину отрицательной оценки:');
-      return true;
-    }
-
-    const rating = 1;
-    const localTicket = await getBotUserTicket(maxUserId, session.ticketId);
-
-    if (!localTicket) {
-      setSession(maxUserId, { state: State.IDLE });
-      await ctx.reply('Заявка не найдена.');
-      return true;
-    }
-
     const existingRating = await getBotTicketRating(session.ticketId);
-
-    if (existingRating) {
-      setSession(maxUserId, { state: State.IDLE });
-      await ctx.reply(`Оценка по заявке №${session.ticketId} уже сохранена: ${existingRating.rating}/5.`);
-      return true;
+    if (!existingRating) {
+      await saveBotTicketRating(maxUserId, session.ticketId, 0);
     }
 
-    const saved = await saveBotTicketRating(maxUserId, session.ticketId, rating);
-
-    if (!saved) {
-      setSession(maxUserId, { state: State.IDLE });
-      await ctx.reply(`Оценка по заявке №${session.ticketId} уже была сохранена.`);
-      return true;
-    }
-
-    const content = [
-      'Пользователь поставил отрицательную оценку.',
-      '',
-      'Причина:',
-      safeText,
-    ].join('\n');
-
-    await addGlpiTicketFollowup(session.ticketId, content);
-
-    setSession(maxUserId, { state: State.IDLE });
-    await ctx.reply(`Спасибо! Оценка ${rating}/5 по заявке №${session.ticketId} сохранена. Комментарий отправлен инженерам.`);
+    await rejectTicketSolution(ctx, session.ticketId, safeText);
     return true;
   }
 
@@ -874,27 +818,5 @@ export function registerTicketActions(bot) {
     const rating = Number(ctx.match[2]);
 
     await rateTicket(ctx, ticketId, rating);
-  });
-
-  bot.action(/^ticket:rate_negative:(\d+)$/, async ctx => {
-    if (!ctx.user || !ctx.user.user_id) return;
-
-    const ticketId = Number(ctx.match[1]);
-    const maxUserId = ctx.user.user_id;
-    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
-
-    if (!checked) {
-      return;
-    }
-
-    const { localTicket } = checked;
-
-    setSession(maxUserId, {
-      state: State.WAIT_NEGATIVE_RATING_REASON,
-      ticketId,
-      glpiUserId: localTicket.glpi_user_id,
-    });
-
-    await ctx.reply(`Укажите причину отрицательной оценки по заявке №${ticketId}:`);
   });
 }

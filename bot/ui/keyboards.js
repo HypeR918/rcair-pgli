@@ -76,16 +76,3 @@ export function ticketFilesKeyboard(filesCount = 0) {
 
   return Keyboard.inlineKeyboard(rows);
 }
-
-export function ticketRatingKeyboard(ticketId) {
-  return Keyboard.inlineKeyboard([
-    [
-      Keyboard.button.callback('1', `ticket:rate:${ticketId}:1`),
-      Keyboard.button.callback('2', `ticket:rate:${ticketId}:2`),
-      Keyboard.button.callback('3', `ticket:rate:${ticketId}:3`),
-      Keyboard.button.callback('4', `ticket:rate:${ticketId}:4`),
-      Keyboard.button.callback('5', `ticket:rate:${ticketId}:5`),
-    ],
-    [Keyboard.button.callback('В меню', 'menu:back')],
-  ]);
-}
