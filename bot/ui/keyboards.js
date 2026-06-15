@@ -23,13 +23,12 @@ export function ticketActionsKeyboard(ticketId, status) {
 
   if (normalizedStatus === GlpiTicketStatus.SOLVED) {
     rows.push([
-      Keyboard.button.callback('Отклонить решение', `ticket:reject:${ticketId}`, {
-        intent: 'negative',
-      }),
+      Keyboard.button.callback('Удовлетворительно', `ticket:accept:${ticketId}`),
     ]);
     rows.push([
-      Keyboard.button.callback('Оценить положительно', `ticket:rate:${ticketId}:5`),
-      Keyboard.button.callback('Оценить отрицательно', `ticket:rate_negative:${ticketId}`),
+      Keyboard.button.callback('Неудовлетворительно', `ticket:reject:${ticketId}`, {
+        intent: 'negative',
+      }),
     ]);
   } else if (normalizedStatus !== GlpiTicketStatus.CLOSED) {
     rows.push([
@@ -65,8 +64,7 @@ export function ticketFilesKeyboard(filesCount = 0) {
 
   if (normalizedFilesCount > 0) {
     rows.push([
-      Keyboard.button.callback(`Создать с файлами (${normalizedFilesCount})`, 'ticket:create_with_files'),
-      Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
+      Keyboard.button.callback(`Создать (${normalizedFilesCount} файл${normalizedFilesCount > 1 ? (normalizedFilesCount < 5 ? 'а' : 'ов') : ''})`, 'ticket:create_with_files'),
     ]);
   } else {
     rows.push([
