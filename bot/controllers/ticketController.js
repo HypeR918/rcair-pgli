@@ -35,7 +35,6 @@ import {
   acceptGlpiTicketSolution,
   rejectGlpiTicketSolution,
   uploadAndAttachFilesToTicket,
-  getGlpiUserTickets,
 } from '../services/glpiService.js';
 
 import {
@@ -190,9 +189,9 @@ export async function showUserTickets(ctx) {
     return;
   }
 
-  const glpiTickets = await getGlpiUserTickets(user.id, { limit: 10 });
+  const tickets = await getBotUserTickets(maxUserId, 10);
 
-  if (glpiTickets.length === 0) {
+  if (tickets.length === 0) {
     await ctx.reply('У вас пока нет заявок.', {
       attachments: [mainMenuKeyboard()],
     });
@@ -201,17 +200,17 @@ export async function showUserTickets(ctx) {
 
   const keyboardItems = [];
 
-  for (const glpiTicket of glpiTickets) {
+  for (const ticket of tickets) {
     try {
-      const ticketId = Number(glpiTicket.ticketId || 0);
+      const ticketId = Number(ticket.glpi_ticket_id || 0);
 
       if (!ticketId) {
         continue;
       }
 
-      const ticket = await getGlpiTicket(ticketId);
-      const status = Number(ticket.status || glpiTicket.status || 0);
-      const title = stripHtml(ticket.name || glpiTicket.name || '');
+      const glpiTicket = await getGlpiTicket(ticketId);
+      const status = Number(glpiTicket.status || ticket.status || 0);
+      const title = stripHtml(glpiTicket.name || ticket.title || '');
 
       await updateBotUserTicketStatus(ticketId, status, title);
 
@@ -222,14 +221,15 @@ export async function showUserTickets(ctx) {
       });
     } catch (err) {
       if (isGlpiTicketNotFoundError(err)) {
-        console.log('Deleted unavailable local ticket:', glpiTicket.ticketId);
+        await deleteBotUserTicketByTicketId(ticket.glpi_ticket_id);
+        console.log('Deleted unavailable local ticket:', ticket.glpi_ticket_id);
         continue;
       }
 
-      console.error('showUserTickets item error:', glpiTicket.ticketId, err.message);
+      console.error('showUserTickets item error:', ticket.glpi_ticket_id, err.message);
 
       keyboardItems.push({
-        ticketId: glpiTicket.ticketId,
+        ticketId: ticket.glpi_ticket_id,
         title: '',
         statusLabel: 'недоступна',
       });

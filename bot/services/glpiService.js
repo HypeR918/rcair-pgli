@@ -1086,22 +1086,45 @@ export async function getGlpiUserTickets(glpiUserId, options = {}) {
   const limit = options.limit || 20;
 
   try {
-    const result = await glpiApiRequest(
+    const userTickets = await glpiApiRequest(
       'get',
-      `/Ticket?criteria[0][table]=glpi_ticketusers&criteria[0][field]=tickets_id&criteria[0][link]=AND&criteria[1][table]=glpi_ticketusers&criteria[1][field]=users_id&criteria[1][searchtype]=equals&criteria[1][value]=${userId}&criteria[2][table]=glpi_ticketusers&criteria[2][field]=type&criteria[2][searchtype]=equals&criteria[2][value]=1&criteria[3][table]=glpi_tickets&criteria[3][field]=status&criteria[3][searchtype]=not+equals&criteria[3][value]=6&range=0-${limit - 1}`
+      `/Ticket_User?criteria[0][table]=glpi_ticketusers&criteria[0][field]=users_id&criteria[0][searchtype]=equals&criteria[0][value]=${userId}&criteria[1][table]=glpi_ticketusers&criteria[1][field]=type&criteria[1][searchtype]=equals&criteria[1][value]=1&range=0-${limit - 1}`
     );
 
-    if (!result) {
+    if (!Array.isArray(userTickets) || userTickets.length === 0) {
       return [];
     }
 
-    const tickets = Array.isArray(result) ? result : [];
+    const ticketIds = userTickets.map(ut => Number(ut.tickets_id || ut.id || 0)).filter(id => id > 0);
 
-    return tickets.map(ticket => ({
-      ticketId: Number(ticket.id || 0),
-      name: ticket.name || '',
-      status: Number(ticket.status || 0),
-    })).filter(t => t.ticketId > 0);
+    if (ticketIds.length === 0) {
+      return [];
+    }
+
+    const tickets = [];
+
+    for (const ticketId of ticketIds.slice(0, limit)) {
+      try {
+        const ticket = await getGlpiTicket(ticketId);
+        const status = Number(ticket.status || 0);
+
+        if (status === 6) {
+          continue;
+        }
+
+        tickets.push({
+          ticketId,
+          name: ticket.name || '',
+          status,
+        });
+      } catch (err) {
+        if (!isGlpiTicketNotFoundError(err)) {
+          console.warn('getGlpiUserTickets skip ticket:', ticketId, err.message);
+        }
+      }
+    }
+
+    return tickets;
   } catch (error) {
     console.error('getGlpiUserTickets error:', error.message);
     return [];
