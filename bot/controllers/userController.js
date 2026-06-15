@@ -96,7 +96,7 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(verifiedEmail);
 
-  await ctx.reply('Проверяю наличие учетной записи в SDS-helpdesk...');
+  await ctx.reply('Проверяю наличие учетной записи в каталоге пользователей корпоративных сервисов Правительства Томской области...');
 
   const importResult = await importUserFromSdsViaGlpi(normalizedEmail);
 
@@ -106,7 +106,7 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
     const user = await findGlpiUserByMaxId(maxUserId);
 
     if (user) {
-      await ctx.reply('Учетная запись найдена в SDS-helpdesk и успешно привязана.');
+      await ctx.reply('Учетная запись найдена и активирована в системе заявок.');
       await showWelcomeAndMenu(ctx, user);
       return;
     }
@@ -118,7 +118,7 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
     sdsData: {},
   });
 
-  await ctx.reply('Учетная запись не найдена в SDS-helpdesk. Начинаем регистрацию.');
+  await ctx.reply('Ваш MAX ID не найден в системе заявок.');
   await ctx.reply('Введите название организации:');
 }
 
@@ -152,7 +152,7 @@ export async function entryPoint(ctx) {
       state: State.WAIT_NEW_USER_EMAIL,
     });
 
-    await ctx.reply('Ваш MAX ID не найден в системе SDS-helpdesk.');
+    await ctx.reply('Ваш MAX ID не найден в системе заявок.');
     await ctx.reply('Введите ваш корпоративный email для входа:');
   } catch (error) {
     console.error('entryPoint error:', error);

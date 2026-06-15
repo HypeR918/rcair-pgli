@@ -1,4 +1,5 @@
 import { Keyboard } from '@maxhub/max-bot-api';
+import { GlpiTicketStatus } from '../utils/constants.js';
 
 export function mainMenuKeyboard() {
   return Keyboard.inlineKeyboard([
@@ -20,18 +21,19 @@ export function ticketActionsKeyboard(ticketId, status) {
 
   const rows = [];
 
-  if (normalizedStatus !== 6) {
+  if (normalizedStatus === GlpiTicketStatus.SOLVED) {
     rows.push([
-      Keyboard.button.callback('Добавить комментарий', `ticket:comment:${ticketId}`),
-    ]);
-  }
-
-  if (normalizedStatus === 5) {
-    rows.push([
-      Keyboard.button.callback('Принять решение', `ticket:accept:${ticketId}`),
       Keyboard.button.callback('Отклонить решение', `ticket:reject:${ticketId}`, {
         intent: 'negative',
       }),
+    ]);
+    rows.push([
+      Keyboard.button.callback('Оценить положительно', `ticket:rate:${ticketId}:5`),
+      Keyboard.button.callback('Оценить отрицательно', `ticket:rate_negative:${ticketId}`),
+    ]);
+  } else if (normalizedStatus !== GlpiTicketStatus.CLOSED) {
+    rows.push([
+      Keyboard.button.callback('Добавить комментарий', `ticket:comment:${ticketId}`),
     ]);
   }
 
@@ -41,12 +43,15 @@ export function ticketActionsKeyboard(ticketId, status) {
 }
 
 export function ticketListKeyboard(tickets) {
-  const rows = tickets.map(ticket => [
-    Keyboard.button.callback(
-      `№${ticket.ticketId} — ${ticket.statusLabel}`,
-      `ticket:open:${ticket.ticketId}`
-    ),
-  ]);
+  const rows = tickets.map(ticket => {
+    const title = ticket.title ? ` — ${ticket.title}` : '';
+    return [
+      Keyboard.button.callback(
+        `№${ticket.ticketId}${title} [${ticket.statusLabel}]`,
+        `ticket:open:${ticket.ticketId}`
+      ),
+    ];
+  });
 
   rows.push([Keyboard.button.callback('Назад', 'menu:back')]);
 
@@ -56,15 +61,22 @@ export function ticketListKeyboard(tickets) {
 export function ticketFilesKeyboard(filesCount = 0) {
   const normalizedFilesCount = Number(filesCount || 0);
 
-  const createLabel = normalizedFilesCount > 0
-    ? `Создать с файлами (${normalizedFilesCount})`
-    : 'Создать заявку';
+  const rows = [];
 
-  return Keyboard.inlineKeyboard([
-    [Keyboard.button.callback(createLabel, 'ticket:create_with_files')],
-    [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
-    [Keyboard.button.callback('Назад', 'menu:back')],
-  ]);
+  if (normalizedFilesCount > 0) {
+    rows.push([
+      Keyboard.button.callback(`Создать с файлами (${normalizedFilesCount})`, 'ticket:create_with_files'),
+      Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
+    ]);
+  } else {
+    rows.push([
+      Keyboard.button.callback('Создать заявку', 'ticket:create_with_files'),
+    ]);
+  }
+
+  rows.push([Keyboard.button.callback('Назад', 'menu:back')]);
+
+  return Keyboard.inlineKeyboard(rows);
 }
 
 export function ticketRatingKeyboard(ticketId) {

@@ -74,7 +74,7 @@ export async function handleSdsTextState(ctx, session, text) {
   if (session.state === State.WAIT_SDS_ISSUE) {
     session.sdsData.issue = text;
 
-    await ctx.reply('Создаю заявку в SDS-helpdesk для администраторов...');
+    await ctx.reply('Создаю заявку для администраторов...');
 
     const localRequestId = await createSdsRequest(
       maxUserId,
@@ -120,7 +120,7 @@ export async function handleApprovedSdsRequest(bot, request) {
 
   await bot.api.sendMessageToUser(
     maxUserId,
-    'Заявка подтверждена. Проверяю учетную запись в SDS-helpdesk.'
+    'Заявка подтверждена. Проверяю учетную запись в каталоге пользователей корпоративных сервисов Правительства Томской области...'
   );
 
   const importResult = await importUserFromSdsViaGlpi(email);
@@ -138,7 +138,7 @@ export async function handleApprovedSdsRequest(bot, request) {
 
       await bot.api.sendMessageToUser(
         maxUserId,
-        'Учетная запись найдена и успешно привязана.'
+        'Учетная запись найдена и активирована в системе заявок.'
       );
 
       await showWelcomeAndMenu(fakeCtx, user);
@@ -148,7 +148,7 @@ export async function handleApprovedSdsRequest(bot, request) {
 
   await bot.api.sendMessageToUser(
     maxUserId,
-    'Заявка подтверждена, но учетная запись пока не найдена в SDS-helpdesk. Обратитесь к администратору.'
+    'Заявка подтверждена, но учетная запись пока не найдена. Обратитесь к администратору.'
   );
 }
 

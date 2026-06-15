@@ -35,6 +35,7 @@ import {
   acceptGlpiTicketSolution,
   rejectGlpiTicketSolution,
   uploadAndAttachFilesToTicket,
+  getGlpiUserTickets,
 } from '../services/glpiService.js';
 
 import {
@@ -189,10 +190,10 @@ export async function showUserTickets(ctx) {
     return;
   }
 
-  const tickets = await getBotUserTickets(maxUserId, 10);
+  const glpiTickets = await getGlpiUserTickets(user.id, { limit: 10 });
 
-  if (tickets.length === 0) {
-    await ctx.reply('У вас пока нет заявок, созданных через MAX.', {
+  if (glpiTickets.length === 0) {
+    await ctx.reply('У вас пока нет заявок.', {
       attachments: [mainMenuKeyboard()],
     });
     return;
@@ -200,35 +201,36 @@ export async function showUserTickets(ctx) {
 
   const keyboardItems = [];
 
-  for (const ticket of tickets) {
+  for (const glpiTicket of glpiTickets) {
     try {
-      const ticketId = Number(ticket.glpi_ticket_id || 0);
+      const ticketId = Number(glpiTicket.ticketId || 0);
 
       if (!ticketId) {
         continue;
       }
 
-      const glpiTicket = await getGlpiTicket(ticketId);
-      const status = Number(glpiTicket.status || ticket.status || 0);
-      const title = stripHtml(glpiTicket.name || ticket.title || '');
+      const ticket = await getGlpiTicket(ticketId);
+      const status = Number(ticket.status || glpiTicket.status || 0);
+      const title = stripHtml(ticket.name || glpiTicket.name || '');
 
       await updateBotUserTicketStatus(ticketId, status, title);
 
       keyboardItems.push({
         ticketId,
+        title: truncateText(title, 50),
         statusLabel: getTicketStatusLabel(status),
       });
     } catch (err) {
       if (isGlpiTicketNotFoundError(err)) {
-        await deleteBotUserTicketByTicketId(ticket.glpi_ticket_id);
-        console.log('Deleted unavailable local ticket:', ticket.glpi_ticket_id);
+        console.log('Deleted unavailable local ticket:', glpiTicket.ticketId);
         continue;
       }
 
-      console.error('showUserTickets item error:', ticket.glpi_ticket_id, err.message);
+      console.error('showUserTickets item error:', glpiTicket.ticketId, err.message);
 
       keyboardItems.push({
-        ticketId: ticket.glpi_ticket_id,
+        ticketId: glpiTicket.ticketId,
+        title: '',
         statusLabel: 'недоступна',
       });
     }
@@ -236,7 +238,7 @@ export async function showUserTickets(ctx) {
 
   if (keyboardItems.length === 0) {
     await ctx.reply(
-      'Актуальных заявок не найдено. Старые несуществующие заявки убраны из списка.',
+      'Актуальных заявок не найдено.',
       {
         attachments: [mainMenuKeyboard()],
       }
@@ -633,6 +635,57 @@ export async function handleTicketTextState(ctx, session, text) {
     return true;
   }
 
+  if (session.state === State.WAIT_NEGATIVE_RATING_REASON) {
+    if (!session.ticketId) {
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Заявка не выбрана.');
+      return true;
+    }
+
+    if (safeText.length < 3) {
+      await ctx.reply('Укажите причину отрицательной оценки:');
+      return true;
+    }
+
+    const rating = 1;
+    const localTicket = await getBotUserTicket(maxUserId, session.ticketId);
+
+    if (!localTicket) {
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Заявка не найдена.');
+      return true;
+    }
+
+    const existingRating = await getBotTicketRating(session.ticketId);
+
+    if (existingRating) {
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply(`Оценка по заявке №${session.ticketId} уже сохранена: ${existingRating.rating}/5.`);
+      return true;
+    }
+
+    const saved = await saveBotTicketRating(maxUserId, session.ticketId, rating);
+
+    if (!saved) {
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply(`Оценка по заявке №${session.ticketId} уже была сохранена.`);
+      return true;
+    }
+
+    const content = [
+      'Пользователь поставил отрицательную оценку.',
+      '',
+      'Причина:',
+      safeText,
+    ].join('\n');
+
+    await addGlpiTicketFollowup(session.ticketId, content);
+
+    setSession(maxUserId, { state: State.IDLE });
+    await ctx.reply(`Спасибо! Оценка ${rating}/5 по заявке №${session.ticketId} сохранена. Комментарий отправлен инженерам.`);
+    return true;
+  }
+
   return false;
 }
 
@@ -724,7 +777,7 @@ export function registerTicketActions(bot) {
   bot.action('menu:help', async ctx => {
     await ctx.reply(
       [
-        'Бот для работы с заявками SDS-helpdesk.',
+        'Бот для работы с заявками.',
         '',
         'Новая — создать заявку.',
         'Выбрать — открыть свои заявки.',
@@ -817,5 +870,27 @@ export function registerTicketActions(bot) {
     const rating = Number(ctx.match[2]);
 
     await rateTicket(ctx, ticketId, rating);
+  });
+
+  bot.action(/^ticket:rate_negative:(\d+)$/, async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const ticketId = Number(ctx.match[1]);
+    const maxUserId = ctx.user.user_id;
+    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
+
+    if (!checked) {
+      return;
+    }
+
+    const { localTicket } = checked;
+
+    setSession(maxUserId, {
+      state: State.WAIT_NEGATIVE_RATING_REASON,
+      ticketId,
+      glpiUserId: localTicket.glpi_user_id,
+    });
+
+    await ctx.reply(`Укажите причину отрицательной оценки по заявке №${ticketId}:`);
   });
 }

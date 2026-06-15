@@ -1001,7 +1001,7 @@ export async function getTicketDecision(ticketId) {
 
 export function buildRegistrationTicketContent(maxUserId, email, data) {
   return [
-    'Пользователь не найден в SDS-helpdesk после проверки через LDAP/GLPI.',
+    'Пользователь не найден в каталоге пользователей после проверки через LDAP/GLPI.',
     '',
     `Email: ${email}`,
     `MAX ID: ${maxUserId}`,
@@ -1028,7 +1028,7 @@ export function buildRegistrationTicketContent(maxUserId, email, data) {
 }
 
 export async function createGlpiRegistrationTicket(maxUserId, email, data) {
-  const title = `Регистрация пользователя в SDS-helpdesk: ${data.fio || email}`;
+  const title = `Регистрация пользователя: ${data.fio || email}`;
   const content = buildRegistrationTicketContent(maxUserId, email, data);
 
   return await createGlpiTicket(title, content, {
@@ -1074,6 +1074,38 @@ export async function createGlpiUserTicket(
     ticketId,
     title: ticketTitle,
   };
+}
+
+export async function getGlpiUserTickets(glpiUserId, options = {}) {
+  const userId = Number(glpiUserId || 0);
+
+  if (!userId) {
+    return [];
+  }
+
+  const limit = options.limit || 20;
+
+  try {
+    const result = await glpiApiRequest(
+      'get',
+      `/Ticket?criteria[0][table]=glpi_ticketusers&criteria[0][field]=tickets_id&criteria[0][link]=AND&criteria[1][table]=glpi_ticketusers&criteria[1][field]=users_id&criteria[1][searchtype]=equals&criteria[1][value]=${userId}&criteria[2][table]=glpi_ticketusers&criteria[2][field]=type&criteria[2][searchtype]=equals&criteria[2][value]=1&criteria[3][table]=glpi_tickets&criteria[3][field]=status&criteria[3][searchtype]=not+equals&criteria[3][value]=6&range=0-${limit - 1}`
+    );
+
+    if (!result) {
+      return [];
+    }
+
+    const tickets = Array.isArray(result) ? result : [];
+
+    return tickets.map(ticket => ({
+      ticketId: Number(ticket.id || 0),
+      name: ticket.name || '',
+      status: Number(ticket.status || 0),
+    })).filter(t => t.ticketId > 0);
+  } catch (error) {
+    console.error('getGlpiUserTickets error:', error.message);
+    return [];
+  }
 }
 
 export async function acceptGlpiTicketSolution(ticketId, maxUserId) {
