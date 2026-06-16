@@ -47,8 +47,8 @@ import {
   helpKeyboard,
   ticketActionsKeyboard,
   ticketListKeyboard,
-  ticketDraftKeyboard,
-  ticketAttachKeyboard,
+  ticketFilesKeyboard,
+  ticketConfirmKeyboard,
 } from '../ui/keyboards.js';
 
 function getDraftFiles(session) {
@@ -210,6 +210,11 @@ export async function showUserTickets(ctx) {
 
       const glpiTicket = await getGlpiTicket(ticketId);
       const status = Number(glpiTicket.status || ticket.status || 0);
+
+      if (status === GlpiTicketStatus.CLOSED) {
+        continue;
+      }
+
       const title = stripHtml(glpiTicket.name || ticket.title || '');
 
       await updateBotUserTicketStatus(ticketId, status, title);
@@ -238,7 +243,7 @@ export async function showUserTickets(ctx) {
 
   if (keyboardItems.length === 0) {
     await ctx.reply(
-      'Актуальных заявок не найдено.',
+      'Нет открытых заявок.',
       {
         attachments: [mainMenuKeyboard()],
       }
@@ -486,7 +491,29 @@ async function finishTicketDraft(ctx, session, withFiles) {
     await cleanupDownloadedFiles(getDraftFiles(session));
   }
 
-  await createUserTicket(ctx, title, description, files);
+  const filesCount = files.length;
+
+  setSession(maxUserId, {
+    state: State.WAIT_TICKET_CONFIRM,
+    glpiUserId: session.glpiUserId,
+    ticketDraft: {
+      title,
+      description,
+      files,
+    },
+  });
+
+  const parts = [
+    'Проверьте данные заявки:',
+    '',
+    `Тема: ${title}`,
+    `Описание: ${description}`,
+    `Вложений: ${filesCount}`,
+  ];
+
+  await ctx.reply(parts.join('\n'), {
+    attachments: [ticketConfirmKeyboard()],
+  });
 }
 
 export async function handleTicketTextState(ctx, session, text) {
@@ -736,6 +763,44 @@ export function registerTicketActions(bot) {
     }
   });
 
+  bot.action('ticket:confirm_create', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
+
+    if (!session || session.state !== State.WAIT_TICKET_CONFIRM) {
+      await ctx.reply('Черновик заявки не найден. Начните создание заявки заново.', {
+        attachments: [mainMenuKeyboard()],
+      });
+      return;
+    }
+
+    const draft = session.ticketDraft || {};
+    const title = String(draft.title || '').trim();
+    const description = String(draft.description || '').trim();
+    const files = Array.isArray(draft.files) ? draft.files : [];
+
+    if (!title || !description) {
+      await cancelDraftFiles(session);
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Черновик заявки поврежден. Начните создание заявки заново.', {
+        attachments: [mainMenuKeyboard()],
+      });
+      return;
+    }
+
+    try {
+      await createUserTicket(ctx, title, description, files);
+    } catch (error) {
+      console.error('ticket:confirm_create error:', error);
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
+        attachments: [mainMenuKeyboard()],
+      });
+    }
+  });
+
   bot.action('menu:list', async ctx => {
     try {
       await showUserTickets(ctx);
@@ -753,7 +818,7 @@ export function registerTicketActions(bot) {
     try {
       const session = getSession(maxUserId);
 
-      if (session?.state === State.WAIT_NEW_TICKET_FILES) {
+      if (session?.state === State.WAIT_NEW_TICKET_FILES || session?.state === State.WAIT_TICKET_CONFIRM) {
         await cancelDraftFiles(session);
       }
 

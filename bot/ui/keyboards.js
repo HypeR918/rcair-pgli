@@ -6,7 +6,6 @@ export function mainMenuKeyboard() {
     [Keyboard.button.callback('Новая', 'menu:new')],
     [Keyboard.button.callback('Выбрать', 'menu:list')],
     [Keyboard.button.callback('Справка', 'menu:help')],
-    [Keyboard.button.callback('Выйти', 'menu:logout', { intent: 'negative' })],
   ]);
 }
 
@@ -57,7 +56,7 @@ export function ticketListKeyboard(tickets) {
   return Keyboard.inlineKeyboard(rows);
 }
 
-export function ticketDraftKeyboard(filesCount = 0) {
+export function ticketFilesKeyboard(filesCount = 0) {
   const normalizedFilesCount = Number(filesCount || 0);
   const rows = [];
 
@@ -68,21 +67,20 @@ export function ticketDraftKeyboard(filesCount = 0) {
     rows.push([
       Keyboard.button.callback(`Создать (${normalizedFilesCount} ${fileWord})`, 'ticket:create_with_files'),
     ]);
+  } else {
+    rows.push([
+      Keyboard.button.callback('Создать заявку', 'ticket:create_with_files'),
+    ]);
   }
-
-  rows.push([
-    Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files'),
-  ]);
 
   rows.push([Keyboard.button.callback('Назад', 'menu:back')]);
 
   return Keyboard.inlineKeyboard(rows);
 }
 
-export function ticketAttachKeyboard() {
+export function ticketConfirmKeyboard() {
   return Keyboard.inlineKeyboard([
-    [Keyboard.button.callback('Прикрепить файлы', 'ticket:start_files')],
-    [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
-    [Keyboard.button.callback('Назад', 'menu:back')],
+    [Keyboard.button.callback('Отправить заявку', 'ticket:confirm_create')],
+    [Keyboard.button.callback('Вернуться в главное меню', 'menu:back')],
   ]);
 }
