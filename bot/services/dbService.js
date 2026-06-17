@@ -174,6 +174,12 @@ export async function ensureDatabaseSchema() {
     )`,
 
     'ALTER TABLE bot_ticket_ratings ADD KEY idx_bot_ticket_ratings_max_id (max_id)',
+
+    `CREATE TABLE IF NOT EXISTS bot_sessions (
+      max_id BIGINT PRIMARY KEY,
+      session_data JSON NOT NULL,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
+    )`,
   ];
 
   for (const sql of queries) {

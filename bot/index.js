@@ -9,6 +9,10 @@ import {
 } from './services/dbService.js';
 
 import {
+  loadAllSessions,
+} from './state/sessionStore.js';
+
+import {
   registerUserHandlers,
 } from './controllers/userController.js';
 
@@ -67,6 +71,7 @@ async function startApp() {
   console.log('Запуск MAX-бота...');
 
   await ensureDatabaseSchema();
+  await loadAllSessions();
 
   registerUserHandlers(bot);
   registerMessageHandler(bot);
