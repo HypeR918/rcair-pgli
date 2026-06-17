@@ -561,7 +561,7 @@ export async function handleTicketTextState(ctx, session, text) {
         'Хотите прикрепить файлы к заявке?',
       ].join('\n'),
       {
-        attachments: [ticketAttachKeyboard()],
+        attachments: [ticketFilesKeyboard()],
       }
     );
 
@@ -579,7 +579,7 @@ export async function handleTicketTextState(ctx, session, text) {
       setSession(maxUserId, session);
 
       await ctx.reply(`Файл добавлен: ${draftFiles.length}.`, {
-        attachments: [ticketDraftKeyboard(draftFiles.length)],
+        attachments: [ticketFilesKeyboard(draftFiles.length)],
       });
 
       return true;
@@ -597,7 +597,7 @@ export async function handleTicketTextState(ctx, session, text) {
     }
 
     await ctx.reply('Отправьте файл или нажмите кнопку.', {
-      attachments: [ticketDraftKeyboard(getDraftFiles(session).length)],
+      attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
     });
 
     return true;
@@ -710,7 +710,7 @@ export function registerTicketActions(bot) {
         'Когда закончите — нажмите «Создать» или «Создать без файлов».',
       ].join('\n'),
       {
-        attachments: [ticketDraftKeyboard(getDraftFiles(session).length)],
+        attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
       }
     );
   });
