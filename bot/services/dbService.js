@@ -888,7 +888,7 @@ export async function saveBotTicketRating(maxUserId, ticketId, rating) {
     throw new Error(`Некорректный номер заявки: ${ticketId}`);
   }
 
-  if (!Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5) {
+  if (!Number.isInteger(normalizedRating) || normalizedRating < 0 || normalizedRating > 5) {
     throw new Error(`Некорректная оценка: ${rating}`);
   }
 
