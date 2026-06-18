@@ -48,6 +48,7 @@ import {
   ticketActionsKeyboard,
   ticketListKeyboard,
   ticketFilesKeyboard,
+  ticketAttachChoiceKeyboard,
   ticketConfirmKeyboard,
 } from '../ui/keyboards.js';
 
@@ -557,11 +558,9 @@ export async function handleTicketTextState(ctx, session, text) {
     await ctx.reply(
       [
         'Описание принято.',
-        '',
-        'Хотите прикрепить файлы к заявке?',
       ].join('\n'),
       {
-        attachments: [ticketFilesKeyboard()],
+        attachments: [ticketAttachChoiceKeyboard()],
       }
     );
 

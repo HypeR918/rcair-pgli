@@ -78,6 +78,14 @@ export function ticketFilesKeyboard(filesCount = 0) {
   return Keyboard.inlineKeyboard(rows);
 }
 
+export function ticketAttachChoiceKeyboard() {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Прикрепить файлы', 'ticket:start_files')],
+    [Keyboard.button.callback('Создать без файлов', 'ticket:create_without_files')],
+    [Keyboard.button.callback('Назад', 'menu:back')],
+  ]);
+}
+
 export function ticketConfirmKeyboard() {
   return Keyboard.inlineKeyboard([
     [Keyboard.button.callback('Отправить заявку', 'ticket:confirm_create')],
