@@ -168,11 +168,13 @@ export async function ensureDatabaseSchema() {
       max_id BIGINT NOT NULL,
       glpi_ticket_id INT NOT NULL,
       rating TINYINT NOT NULL,
+      comment TEXT DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       UNIQUE KEY uniq_ticket_rating (glpi_ticket_id),
       KEY idx_bot_ticket_ratings_max_id (max_id)
     )`,
 
+    'ALTER TABLE bot_ticket_ratings ADD COLUMN comment TEXT DEFAULT NULL',
     'ALTER TABLE bot_ticket_ratings ADD KEY idx_bot_ticket_ratings_max_id (max_id)',
 
     `CREATE TABLE IF NOT EXISTS bot_sessions (
@@ -875,7 +877,7 @@ export async function getBotTicketRating(ticketId) {
   return rows[0] || null;
 }
 
-export async function saveBotTicketRating(maxUserId, ticketId, rating) {
+export async function saveBotTicketRating(maxUserId, ticketId, rating, comment = null) {
   const normalizedMaxUserId = Number(maxUserId || 0);
   const normalizedTicketId = Number(ticketId || 0);
   const normalizedRating = Number(rating || 0);
@@ -894,9 +896,9 @@ export async function saveBotTicketRating(maxUserId, ticketId, rating) {
 
   const [result] = await botPool.execute(
     `INSERT IGNORE INTO bot_ticket_ratings
-      (max_id, glpi_ticket_id, rating)
-     VALUES (?, ?, ?)`,
-    [normalizedMaxUserId, normalizedTicketId, normalizedRating]
+      (max_id, glpi_ticket_id, rating, comment)
+     VALUES (?, ?, ?, ?)`,
+    [normalizedMaxUserId, normalizedTicketId, normalizedRating, comment || null]
   );
 
   return result.affectedRows === 1;

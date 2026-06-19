@@ -416,7 +416,7 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
   await ctx.reply(`Решение по заявке №${ticketId}${titlePart} отклонено.\nЗаявка вернулась в работу`);
 }
 
-export async function rateTicket(ctx, ticketId, rating) {
+export async function rateTicket(ctx, ticketId, rating, comment = null) {
   const maxUserId = ctx.user.user_id;
   const normalizedRating = Number(rating || 0);
 
@@ -434,7 +434,7 @@ export async function rateTicket(ctx, ticketId, rating) {
     return;
   }
 
-  const saved = await saveBotTicketRating(maxUserId, ticketId, normalizedRating);
+  const saved = await saveBotTicketRating(maxUserId, ticketId, normalizedRating, comment);
 
   if (!saved) {
     await ctx.reply('Ваша оценка уже учтена.');
@@ -609,6 +609,11 @@ export async function handleTicketTextState(ctx, session, text) {
     if (safeText.length < 3) {
       await ctx.reply('Расскажите, что было не так?');
       return true;
+    }
+
+    const existingRating = await getBotTicketRating(session.ticketId);
+    if (!existingRating) {
+      await saveBotTicketRating(maxUserId, session.ticketId, 0, safeText);
     }
 
     const content = [
