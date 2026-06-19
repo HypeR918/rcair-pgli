@@ -1,6 +1,12 @@
 import { Keyboard } from '@maxhub/max-bot-api';
 import { GlpiTicketStatus } from '../utils/constants.js';
 
+export function startKeyboard() {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Для начала работы нужно авторизоваться', 'menu:start_auth')],
+  ]);
+}
+
 export function mainMenuKeyboard() {
   return Keyboard.inlineKeyboard([
     [Keyboard.button.callback('Новая', 'menu:new')],
@@ -22,10 +28,10 @@ export function ticketActionsKeyboard(ticketId, status) {
 
   if (normalizedStatus === GlpiTicketStatus.SOLVED) {
     rows.push([
-      Keyboard.button.callback('Удовлетворительно', `ticket:accept:${ticketId}`),
+      Keyboard.button.callback('Да, закрыть заявку', `ticket:accept:${ticketId}`),
     ]);
     rows.push([
-      Keyboard.button.callback('Неудовлетворительно', `ticket:reject:${ticketId}`, {
+      Keyboard.button.callback('Нет, вернуть в работу', `ticket:reject:${ticketId}`, {
         intent: 'negative',
       }),
     ]);
@@ -38,6 +44,23 @@ export function ticketActionsKeyboard(ticketId, status) {
   rows.push([Keyboard.button.callback('Назад к списку', 'menu:list')]);
 
   return Keyboard.inlineKeyboard(rows);
+}
+
+export function ticketSolutionNotificationKeyboard(ticketId) {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Да, закрыть заявку', `ticket:accept:${ticketId}`)],
+    [Keyboard.button.callback('Нет, вернуть в работу', `ticket:reject:${ticketId}`, {
+      intent: 'negative',
+    })],
+    [Keyboard.button.callback('Назад к списку', 'menu:list')],
+  ]);
+}
+
+export function ticketRateChoiceKeyboard(ticketId) {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Да', `ticket:rate:${ticketId}:1`)],
+    [Keyboard.button.callback('Нет', `ticket:rate_negative:${ticketId}`)],
+  ]);
 }
 
 export function ticketListKeyboard(tickets) {

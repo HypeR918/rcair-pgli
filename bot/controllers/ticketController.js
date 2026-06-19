@@ -50,6 +50,7 @@ import {
   ticketFilesKeyboard,
   ticketAttachChoiceKeyboard,
   ticketConfirmKeyboard,
+  ticketRateChoiceKeyboard,
 } from '../ui/keyboards.js';
 
 function getDraftFiles(session) {
@@ -86,11 +87,12 @@ function isGlpiTicketNotFoundError(error) {
   );
 }
 
-async function deleteMissingTicketAndReply(ctx, ticketId) {
+async function deleteMissingTicketAndReply(ctx, ticketId, title) {
   await deleteBotUserTicketByTicketId(ticketId);
 
+  const titlePart = title ? ` ${title}` : '';
   await ctx.reply(
-    `Заявка №${ticketId} больше не существует в GLPI. Я убрал её из списка.`
+    `Заявка №${ticketId}${titlePart} больше не существует в GLPI. Я убрал её из списка.`
   );
 }
 
@@ -99,7 +101,7 @@ async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
   const localTicket = await getBotUserTicket(maxUserId, ticketId);
 
   if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    await ctx.reply('Эта заявка не найдена среди ваших активных заявок.');
     return null;
   }
 
@@ -112,7 +114,7 @@ async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
     };
   } catch (error) {
     if (isGlpiTicketNotFoundError(error)) {
-      await deleteMissingTicketAndReply(ctx, ticketId);
+      await deleteMissingTicketAndReply(ctx, ticketId, localTicket.title);
       return null;
     }
 
@@ -126,14 +128,9 @@ export async function createUserTicket(ctx, title, description, files = []) {
 
   if (!user) {
     await cleanupDownloadedFiles(files);
-    await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+    await ctx.reply('Учетная запись не найдена. Для входа отправьте /start');
     return;
   }
-
-  console.log('=== BOT CREATE USER TICKET CONTEXT ===');
-  console.log('maxUserId:', maxUserId);
-  console.log('glpiUserId:', user.id);
-  console.log('localUserEntityId:', user.entity_id);
 
   const { ticketId, title: ticketTitle } = await createGlpiUserTicket(
     maxUserId,
@@ -166,10 +163,10 @@ export async function createUserTicket(ctx, title, description, files = []) {
     glpiUserId: user.id,
   });
 
-  const parts = [`Заявка №${ticketId} создана.`];
+  const parts = [`Заявка №${ticketId} ${ticketTitle} создана.`];
 
   if (uploadedFiles.length > 0) {
-    parts.push(`Вложения добавлены: ${uploadedFiles.length}.`);
+    parts.push(`Всего вложений: ${uploadedFiles.length}.`);
   }
 
   if (uploadError) {
@@ -177,7 +174,7 @@ export async function createUserTicket(ctx, title, description, files = []) {
   }
 
   await ctx.reply(parts.join('\n'), {
-    attachments: [ticketActionsKeyboard(ticketId, GlpiTicketStatus.NEW)],
+    attachments: [mainMenuKeyboard()],
   });
 }
 
@@ -186,7 +183,7 @@ export async function showUserTickets(ctx) {
   const user = await findGlpiUserByMaxId(maxUserId);
 
   if (!user) {
-    await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+    await ctx.reply('Учетная запись не найдена. Для входа отправьте /start');
     return;
   }
 
@@ -278,13 +275,6 @@ export async function showTicketDetails(ctx, ticketId) {
     .map(item => stripHtml(item.content || ''))
     .filter(Boolean);
 
-  const solutionText =
-    status === GlpiTicketStatus.SOLVED || status === GlpiTicketStatus.CLOSED
-      ? await getLatestTicketSolutionText(ticketId)
-      : '';
-
-  const rating = await getBotTicketRating(ticketId);
-
   const parts = [
     `Заявка №${ticketId}`,
     `Тема: ${title}`,
@@ -302,15 +292,6 @@ export async function showTicketDetails(ctx, ticketId) {
     }
   }
 
-  if (solutionText) {
-    parts.push('', 'Предложенное решение:', truncateText(solutionText, 1000));
-  }
-
-  if (rating) {
-    const ratingLabel = rating.rating === 1 ? 'Удовлетворительно' : 'Неудовлетворительно';
-    parts.push('', `Оценка пользователя: ${ratingLabel}`);
-  }
-
   await ctx.reply(parts.join('\n'), {
     attachments: [ticketActionsKeyboard(ticketId, status)],
   });
@@ -326,6 +307,7 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
   }
 
   const { localTicket } = checked;
+  const ticketTitle = stripHtml(localTicket.title || '');
 
   const content = [
     'Комментарий пользователя из MAX:',
@@ -358,7 +340,8 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  const parts = [`Комментарий добавлен в заявку №${ticketId}.`];
+  const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
+  const parts = [`Комментарий добавлен в заявку №${ticketId}${titlePart}.`];
 
   if (uploadedFiles.length > 0) {
     parts.push(`Вложения добавлены: ${uploadedFiles.length}.`);
@@ -381,6 +364,7 @@ export async function acceptTicketSolution(ctx, ticketId) {
   }
 
   const { localTicket } = checked;
+  const ticketTitle = stripHtml(localTicket.title || '');
 
   const { followupId, content } = await acceptGlpiTicketSolution(ticketId, maxUserId);
 
@@ -392,18 +376,15 @@ export async function acceptTicketSolution(ctx, ticketId) {
   await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.CLOSED);
   await markTicketClosedNotified(ticketId);
 
-  const existingRating = await getBotTicketRating(ticketId);
-
-  if (!existingRating) {
-    await saveBotTicketRating(maxUserId, ticketId, 1);
-  }
-
   setSession(maxUserId, {
-    state: State.IDLE,
+    state: State.WAIT_RATING_CHOICE,
+    ticketId,
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  await ctx.reply(`Решение по заявке №${ticketId} принято. Заявка закрыта. Оценка: Удовлетворительно.`);
+  await ctx.reply('Вы остались довольны качеством нашей работы?', {
+    attachments: [ticketRateChoiceKeyboard(ticketId)],
+  });
 }
 
 export async function rejectTicketSolution(ctx, ticketId, reason) {
@@ -415,6 +396,7 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
   }
 
   const { localTicket } = checked;
+  const ticketTitle = stripHtml(localTicket.title || '');
 
   const { followupId, content } = await rejectGlpiTicketSolution(ticketId, reason);
 
@@ -430,47 +412,42 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
     glpiUserId: localTicket.glpi_user_id,
   });
 
-  await ctx.reply(`Решение по заявке №${ticketId} отклонено. Комментарий отправлен инженерам.`);
+  const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
+  await ctx.reply(`Решение по заявке №${ticketId}${titlePart} отклонено.\nЗаявка вернулась в работу`);
 }
 
 export async function rateTicket(ctx, ticketId, rating) {
   const maxUserId = ctx.user.user_id;
   const normalizedRating = Number(rating || 0);
 
-  if (!Number.isInteger(normalizedRating) || normalizedRating < 1 || normalizedRating > 5) {
-    await ctx.reply('Некорректная оценка. Выберите оценку от 1 до 5.');
-    return;
-  }
-
   const localTicket = await getBotUserTicket(maxUserId, ticketId);
 
   if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших заявок.');
+    await ctx.reply('Эта заявка не найдена среди ваших активных заявок.');
     return;
   }
 
   const existingRating = await getBotTicketRating(ticketId);
 
   if (existingRating) {
-    await ctx.reply(`Оценка по заявке №${ticketId} уже сохранена: ${existingRating.rating}/5.`);
+    await ctx.reply('Ваша оценка уже учтена.');
     return;
   }
 
   const saved = await saveBotTicketRating(maxUserId, ticketId, normalizedRating);
 
   if (!saved) {
-    const ratingAfterSave = await getBotTicketRating(ticketId);
-
-    await ctx.reply(
-      ratingAfterSave
-        ? `Оценка по заявке №${ticketId} уже сохранена: ${ratingAfterSave.rating}/5.`
-        : `Оценка по заявке №${ticketId} уже была сохранена.`
-    );
-
+    await ctx.reply('Ваша оценка уже учтена.');
     return;
   }
 
-  await ctx.reply(`Спасибо! Оценка ${normalizedRating}/5 по заявке №${ticketId} сохранена.`);
+  setSession(maxUserId, { state: State.IDLE });
+
+  if (normalizedRating === 1) {
+    await ctx.reply('Ваша оценка учтена. Спасибо :)');
+  } else {
+    await ctx.reply('Ваша оценка учтена');
+  }
 }
 
 async function finishTicketDraft(ctx, session, withFiles) {
@@ -505,7 +482,7 @@ async function finishTicketDraft(ctx, session, withFiles) {
   });
 
   const parts = [
-    'Проверьте данные заявки:',
+    'Проверьте данные заявки',
     '',
     `Тема: ${title}`,
     `Описание: ${description}`,
@@ -523,7 +500,7 @@ export async function handleTicketTextState(ctx, session, text) {
 
   if (session.state === State.WAIT_NEW_TICKET_TITLE) {
     if (safeText.length < 3) {
-      await ctx.reply('Заголовок слишком короткий. Введите понятный заголовок заявки:');
+      await ctx.reply('Заголовок слишком короткий\nВведите понятный заголовок заявки:');
       return true;
     }
 
@@ -536,13 +513,13 @@ export async function handleTicketTextState(ctx, session, text) {
 
     setSession(maxUserId, session);
 
-    await ctx.reply('Введите описание заявки:');
+    await ctx.reply('Подробно опишите Ваш запрос или проблему');
     return true;
   }
 
   if (session.state === State.WAIT_NEW_TICKET_DESCRIPTION) {
     if (safeText.length < 5) {
-      await ctx.reply('Описание слишком короткое. Опишите обращение подробнее:');
+      await ctx.reply('Описание слишком короткое\nОпишите обращение подробнее');
       return true;
     }
 
@@ -555,14 +532,9 @@ export async function handleTicketTextState(ctx, session, text) {
 
     setSession(maxUserId, session);
 
-    await ctx.reply(
-      [
-        'Описание принято.',
-      ].join('\n'),
-      {
-        attachments: [ticketAttachChoiceKeyboard()],
-      }
-    );
+    await ctx.reply('Описание принято.', {
+      attachments: [ticketAttachChoiceKeyboard()],
+    });
 
     return true;
   }
@@ -577,41 +549,17 @@ export async function handleTicketTextState(ctx, session, text) {
 
       setSession(maxUserId, session);
 
-      await ctx.reply(`Файл добавлен: ${draftFiles.length}.`, {
+      await ctx.reply(`Файл добавлен к заявке\nВсего вложений: ${draftFiles.length}`, {
         attachments: [ticketFilesKeyboard(draftFiles.length)],
       });
 
       return true;
     }
 
-    const normalizedText = safeText.toLowerCase();
-
-    if (['создать', 'готово', 'готов', 'без файлов', 'пропустить'].includes(normalizedText)) {
-      await finishTicketDraft(
-        ctx,
-        session,
-        normalizedText !== 'без файлов' && normalizedText !== 'пропустить'
-      );
-      return true;
-    }
-
-    await ctx.reply('Отправьте файл или нажмите кнопку.', {
+    await ctx.reply('Отправьте скриншоты или файлы', {
       attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
     });
 
-    return true;
-  }
-
-  if (session.state === State.WAIT_NEW_TICKET_CONTENT) {
-    const incomingFiles = await collectDownloadedMaxAttachments(ctx);
-
-    if (safeText.length < 5) {
-      await cleanupDownloadedFiles(incomingFiles);
-      await ctx.reply('Опишите обращение подробнее:');
-      return true;
-    }
-
-    await createUserTicket(ctx, truncateText(safeText, 80), safeText, incomingFiles);
     return true;
   }
 
@@ -647,12 +595,32 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    const existingRating = await getBotTicketRating(session.ticketId);
-    if (!existingRating) {
-      await saveBotTicketRating(maxUserId, session.ticketId, 0);
+    await rejectTicketSolution(ctx, session.ticketId, safeText);
+    return true;
+  }
+
+  if (session.state === State.WAIT_NEGATIVE_RATING_REASON) {
+    if (!session.ticketId) {
+      setSession(maxUserId, { state: State.IDLE });
+      await ctx.reply('Заявка не выбрана.');
+      return true;
     }
 
-    await rejectTicketSolution(ctx, session.ticketId, safeText);
+    if (safeText.length < 3) {
+      await ctx.reply('Расскажите, что было не так?');
+      return true;
+    }
+
+    const content = [
+      'Пользователь оставил негативный отзыв:',
+      '',
+      safeText,
+    ].join('\n');
+
+    await addGlpiTicketFollowup(session.ticketId, content);
+
+    setSession(maxUserId, { state: State.IDLE });
+    await ctx.reply('Ваша оценка учтена');
     return true;
   }
 
@@ -660,6 +628,18 @@ export async function handleTicketTextState(ctx, session, text) {
 }
 
 export function registerTicketActions(bot) {
+  bot.action('menu:start_auth', async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const maxUserId = ctx.user.user_id;
+
+    setSession(maxUserId, {
+      state: State.WAIT_NEW_USER_EMAIL,
+    });
+
+    await ctx.reply('Введите Ваш корпоративный email');
+  });
+
   bot.action('menu:new', async ctx => {
     if (!ctx.user || !ctx.user.user_id) return;
 
@@ -669,7 +649,7 @@ export function registerTicketActions(bot) {
       const user = await findGlpiUserByMaxId(maxUserId);
 
       if (!user) {
-        await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+        await ctx.reply('Учетная запись не найдена. Для входа отправьте /start');
         return;
       }
 
@@ -683,7 +663,7 @@ export function registerTicketActions(bot) {
         },
       });
 
-      await ctx.reply('Введите заголовок заявки:');
+      await ctx.reply('Обозначьте тему заявки');
     } catch (error) {
       console.error('menu:new error:', error);
       await ctx.reply('Ошибка. Попробуйте позже.');
@@ -703,15 +683,9 @@ export function registerTicketActions(bot) {
       return;
     }
 
-    await ctx.reply(
-      [
-        'Отправьте фото или файлы одним или несколькими сообщениями.',
-        'Когда закончите — нажмите «Создать» или «Создать без файлов».',
-      ].join('\n'),
-      {
-        attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
-      }
-    );
+    await ctx.reply('Отправьте скриншоты или файлы', {
+      attachments: [ticketFilesKeyboard(getDraftFiles(session).length)],
+    });
   });
 
   bot.action('ticket:create_with_files', async ctx => {
@@ -721,7 +695,7 @@ export function registerTicketActions(bot) {
     const session = getSession(maxUserId);
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
-      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась. Начните создание заявки заново.', {
+      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась.\nНачните создание заявки заново.', {
         attachments: [mainMenuKeyboard()],
       });
       return;
@@ -745,7 +719,7 @@ export function registerTicketActions(bot) {
     const session = getSession(maxUserId);
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
-      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась. Начните создание заявки заново.', {
+      await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась.\nНачните создание заявки заново.', {
         attachments: [mainMenuKeyboard()],
       });
       return;
@@ -769,7 +743,7 @@ export function registerTicketActions(bot) {
     const session = getSession(maxUserId);
 
     if (!session || session.state !== State.WAIT_TICKET_CONFIRM) {
-      await ctx.reply('Черновик заявки не найден. Начните создание заявки заново.', {
+      await ctx.reply('Черновик заявки не найден.\nНачните создание заявки заново.', {
         attachments: [mainMenuKeyboard()],
       });
       return;
@@ -836,10 +810,10 @@ export function registerTicketActions(bot) {
         return;
       }
 
-      await ctx.reply('Отправьте /start для входа.');
+      await ctx.reply('Для входа отправьте /start');
     } catch (error) {
       console.error('menu:back error:', error);
-      await ctx.reply('Отправьте /start для входа.');
+      await ctx.reply('Для входа отправьте /start');
     }
   });
 
@@ -868,20 +842,6 @@ export function registerTicketActions(bot) {
     );
   });
 
-  bot.action('menu:logout', async ctx => {
-    if (ctx.user && ctx.user.user_id) {
-      const session = getSession(ctx.user.user_id);
-
-      if (session?.state === State.WAIT_NEW_TICKET_FILES) {
-        await cancelDraftFiles(session);
-      }
-
-      deleteSession(ctx.user.user_id);
-    }
-
-    await ctx.reply('Сессия завершена. Отправьте /start для входа.');
-  });
-
   bot.action(/^ticket:open:(\d+)$/, async ctx => {
     const ticketId = Number(ctx.match[1]);
     try {
@@ -906,6 +866,7 @@ export function registerTicketActions(bot) {
       }
 
       const { localTicket } = checked;
+      const ticketTitle = stripHtml(localTicket.title || '');
 
       setSession(maxUserId, {
         state: State.WAIT_TICKET_COMMENT,
@@ -913,7 +874,8 @@ export function registerTicketActions(bot) {
         glpiUserId: localTicket.glpi_user_id,
       });
 
-      await ctx.reply(`Введите комментарий для заявки №${ticketId}. Можно приложить фото или файл.`);
+      const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
+      await ctx.reply(`Введите комментарий для заявки №${ticketId}${titlePart}.\nМожно приложить фото или файл.`);
     } catch (error) {
       console.error('ticket:comment error:', error);
       await ctx.reply('Ошибка. Попробуйте позже.');
@@ -944,6 +906,7 @@ export function registerTicketActions(bot) {
       }
 
       const { localTicket } = checked;
+      const ticketTitle = stripHtml(localTicket.title || '');
 
       setSession(maxUserId, {
         state: State.WAIT_REJECT_SOLUTION_REASON,
@@ -951,14 +914,15 @@ export function registerTicketActions(bot) {
         glpiUserId: localTicket.glpi_user_id,
       });
 
-      await ctx.reply(`Укажите, почему вы отклоняете решение по заявке №${ticketId}:`);
+      const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
+      await ctx.reply(`Расскажите, почему вы отклоняете решение по заявке №${ticketId}${titlePart}:`);
     } catch (error) {
       console.error('ticket:reject error:', error);
       await ctx.reply('Ошибка. Попробуйте позже.');
     }
   });
 
-  bot.action(/^ticket:rate:(\d+):([1-5])$/, async ctx => {
+  bot.action(/^ticket:rate:(\d+):([0-5])$/, async ctx => {
     if (!ctx.user || !ctx.user.user_id) return;
 
     const ticketId = Number(ctx.match[1]);
@@ -968,7 +932,29 @@ export function registerTicketActions(bot) {
       await rateTicket(ctx, ticketId, rating);
     } catch (error) {
       console.error('ticket:rate error:', error);
-      await ctx.reply('Ошибка при сохранении оценки. Попробуйте позже.');
+      await ctx.reply('Произошла ошибка. Попробуйте позже.');
     }
+  });
+
+  bot.action(/^ticket:rate_negative:(\d+)$/, async ctx => {
+    if (!ctx.user || !ctx.user.user_id) return;
+
+    const ticketId = Number(ctx.match[1]);
+    const maxUserId = ctx.user.user_id;
+    const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
+
+    if (!checked) {
+      return;
+    }
+
+    const { localTicket } = checked;
+
+    setSession(maxUserId, {
+      state: State.WAIT_NEGATIVE_RATING_REASON,
+      ticketId,
+      glpiUserId: localTicket.glpi_user_id,
+    });
+
+    await ctx.reply('Нам жаль, что Вы остались недовольны результатом\nПомогите нам стать лучше. Расскажите, что было не так?');
   });
 }

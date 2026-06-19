@@ -2,7 +2,7 @@ import { env } from '../config/env.js';
 import { State } from '../utils/constants.js';
 import { normalizeEmail } from '../utils/textUtils.js';
 import { isValidEmail } from '../utils/validation.js';
-import { mainMenuKeyboard } from '../ui/keyboards.js';
+import { mainMenuKeyboard, startKeyboard } from '../ui/keyboards.js';
 
 import {
   generateEmailVerificationCode,
@@ -60,7 +60,7 @@ export async function showMenu(ctx) {
   const user = await findGlpiUserByMaxId(maxUserId);
 
   if (!user) {
-    await ctx.reply('Учетная запись не найдена. Отправьте /start для входа.');
+    await ctx.reply('Учетная запись не найдена. Для входа отправьте /start');
     return;
   }
 
@@ -89,14 +89,15 @@ export async function startEmailVerification(ctx, email, flow) {
   });
 
   await sendEmailVerificationCode(normalizedEmail, code);
-  await ctx.reply('Код подтверждения отправлен на email. Введите код из письма:');
+  await ctx.reply('На указанную почту отправлен код подтверждения');
+  await ctx.reply('Введите код подтверждения из письма');
 }
 
 export async function proceedAfterVerification(ctx, verifiedEmail) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(verifiedEmail);
 
-  await ctx.reply('Проверяю наличие учетной записи в каталоге пользователей...');
+  await ctx.reply('Проверяю наличие учетной записи...');
 
   const importResult = await importUserFromSdsViaGlpi(normalizedEmail);
 
@@ -118,14 +119,12 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
     sdsData: {},
   });
 
-  await ctx.reply('Ваш MAX ID не найден в системе заявок.');
+  await ctx.reply('Ваш MAX ID не найден в системе заявок');
   await ctx.reply('Введите название организации:');
 }
 
 export async function entryPoint(ctx) {
   const maxUserId = ctx.user.user_id;
-
-  await ctx.reply('Проверка доступа...');
 
   try {
     const blocked = await isMaxIdBlocked(maxUserId);
@@ -136,7 +135,7 @@ export async function entryPoint(ctx) {
         attempts: 0,
       });
 
-      await ctx.reply('Ваш MAX ID заблокирован. Для разблокировки нужно подтвердить корпоративный email.');
+      await ctx.reply('Ваш MAX ID заблокирован\nДля разблокировки нужно подтвердить email');
       await ctx.reply('Введите ваш корпоративный email:');
       return;
     }
@@ -152,11 +151,15 @@ export async function entryPoint(ctx) {
       state: State.WAIT_NEW_USER_EMAIL,
     });
 
-    await ctx.reply('Ваш MAX ID не найден в системе заявок.');
-    await ctx.reply('Введите ваш корпоративный email для входа:');
+    await ctx.reply(
+      'Здравствуйте!\nЭто бот технической поддержки ОЦАИР ТО\nДля начала работы нужно авторизоваться',
+      {
+        attachments: [startKeyboard()],
+      }
+    );
   } catch (error) {
     console.error('entryPoint error:', error);
-    await ctx.reply('Ошибка подключения к базе данных.');
+    await ctx.reply('Ошибка подключения к базе данных\nПовторите попытку позже');
   }
 }
 
@@ -164,7 +167,7 @@ export async function handleEmailInput(ctx, email, flow) {
   const normalizedEmail = normalizeEmail(email);
 
   if (!isValidEmail(normalizedEmail)) {
-    await ctx.reply('Некорректный формат email. Попробуйте снова:');
+    await ctx.reply('Некорректный формат email. Попробуйте снова');
     return;
   }
 
@@ -191,7 +194,7 @@ export async function handleVerificationCode(ctx, session, text) {
           : State.WAIT_NEW_USER_EMAIL,
     });
 
-    await ctx.reply('Срок действия кода истек. Введите email заново:');
+    await ctx.reply('Срок действия кода истек. Введите email еще раз');
     return;
   }
 
@@ -203,12 +206,12 @@ export async function handleVerificationCode(ctx, session, text) {
       await blockMaxId(maxUserId);
       deleteSession(maxUserId);
 
-      await ctx.reply('Код введен неверно два раза. Ваш MAX ID заблокирован.');
+      await ctx.reply('Код введен неверно два раза. Ваш MAX ID заблокирован');
       return;
     }
 
     setSession(maxUserId, session);
-    await ctx.reply('Код неверный. Попробуйте еще раз:');
+    await ctx.reply('Код неверный. Попробуйте еще раз');
     return;
   }
 
@@ -217,7 +220,7 @@ export async function handleVerificationCode(ctx, session, text) {
 
   if (wasUnlockFlow) {
     await unblockMaxId(maxUserId);
-    await ctx.reply('MAX ID разблокирован.');
+    await ctx.reply('MAX ID разблокирован');
   }
 
   setSession(maxUserId, {

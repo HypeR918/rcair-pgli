@@ -120,7 +120,12 @@ export async function handleApprovedSdsRequest(bot, request) {
 
   await bot.api.sendMessageToUser(
     maxUserId,
-    'Заявка подтверждена. Проверяю учетную запись в каталоге пользователей корпоративных сервисов Правительства Томской области...'
+    'Заявка подтверждена'
+  );
+
+  await bot.api.sendMessageToUser(
+    maxUserId,
+    'Проверяю учетную запись в каталоге пользователей...'
   );
 
   const importResult = await importUserFromSdsViaGlpi(email);
@@ -148,7 +153,7 @@ export async function handleApprovedSdsRequest(bot, request) {
 
   await bot.api.sendMessageToUser(
     maxUserId,
-    'Заявка подтверждена, но учетная запись пока не найдена. Обратитесь к администратору.'
+    'Заявка подтверждена, но учетная запись пока не найдена. Обратитесь к администратору:\nНаправьте заявку по email на адрес support@gov70.ru'
   );
 }
 

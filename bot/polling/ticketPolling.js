@@ -21,6 +21,7 @@ import {
 
 import {
   ticketActionsKeyboard,
+  ticketSolutionNotificationKeyboard,
 } from '../ui/keyboards.js';
 
 let ticketPollingInProgress = false;
@@ -81,11 +82,13 @@ async function notifyNewFollowups(bot, localTicket, ticketId, status) {
       continue;
     }
 
+    const title = stripHtml(localTicket.title || '');
+
     await sendMessageToMaxUser(
       bot,
       localTicket.max_id,
       [
-        `Новый комментарий по заявке №${ticketId}:`,
+        `Новый комментарий по заявке №${ticketId} ${title}:`,
         '',
         truncateText(content, 3000),
       ].join('\n'),
@@ -108,19 +111,20 @@ async function notifySolutionIfNeeded(bot, localTicket, ticketId, status) {
   }
 
   const solutionText = await getLatestTicketSolutionText(ticketId);
+  const title = stripHtml(localTicket.title || '');
 
   await sendMessageToMaxUser(
     bot,
     localTicket.max_id,
     [
-      `По заявке №${ticketId} предложено решение.`,
+      `По заявке №${ticketId} ${title} предложено решение.`,
       '',
       solutionText ? truncateText(solutionText, 3000) : 'Текст решения не указан.',
       '',
-      'Примите или отклоните решение.',
+      'Заявка решена?',
     ].join('\n'),
     {
-      attachments: [ticketActionsKeyboard(ticketId, 5)],
+      attachments: [ticketSolutionNotificationKeyboard(ticketId)],
     }
   );
 
@@ -136,10 +140,12 @@ async function notifyClosedIfNeeded(bot, localTicket, ticketId, status) {
     return;
   }
 
+  const title = stripHtml(localTicket.title || '');
+
   await sendMessageToMaxUser(
     bot,
     localTicket.max_id,
-    `Заявка №${ticketId} закрыта.`
+    `Заявка №${ticketId} ${title} закрыта.`
   );
 
   await markTicketClosedNotified(ticketId);
