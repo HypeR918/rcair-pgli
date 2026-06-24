@@ -2,6 +2,12 @@ import { Keyboard } from '@maxhub/max-bot-api';
 import { GlpiTicketStatus } from '../utils/constants.js';
 import { env } from '../config/env.js';
 
+export function startKeyboard() {
+  return Keyboard.inlineKeyboard([
+    [Keyboard.button.callback('Для начала работы нужно авторизоваться', 'menu:start_auth')],
+  ]);
+}
+
 export function mainMenuKeyboard(maxUserId) {
   const rows = [
     [Keyboard.button.callback('Новая', 'menu:new')],
