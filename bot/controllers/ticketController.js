@@ -876,6 +876,13 @@ export function registerTicketActions(bot) {
       }
 
       const { localTicket, glpiTicket } = checked;
+      const status = Number(glpiTicket.status || 0);
+
+      if (status === GlpiTicketStatus.CLOSED) {
+        await ctx.reply('Заявка закрыта. Комментарии к закрытым заявкам нельзя добавлять.');
+        return;
+      }
+
       const ticketTitle = stripHtml(glpiTicket.name || '');
 
       setSession(maxUserId, {
