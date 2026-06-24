@@ -45,7 +45,7 @@ export async function showWelcomeAndMenu(ctx, user) {
     'пользователь';
 
   await ctx.reply(`Добро пожаловать, ${fio}!`, {
-    attachments: [mainMenuKeyboard()],
+    attachments: [mainMenuKeyboard(maxUserId)],
   });
 }
 
@@ -70,7 +70,7 @@ export async function showMenu(ctx) {
   });
 
   await ctx.reply('Главное меню:', {
-    attachments: [mainMenuKeyboard()],
+    attachments: [mainMenuKeyboard(maxUserId)],
   });
 }
 

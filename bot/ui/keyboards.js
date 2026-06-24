@@ -1,18 +1,19 @@
 import { Keyboard } from '@maxhub/max-bot-api';
 import { GlpiTicketStatus } from '../utils/constants.js';
+import { env } from '../config/env.js';
 
-export function startKeyboard() {
-  return Keyboard.inlineKeyboard([
-    [Keyboard.button.callback('Для начала работы нужно авторизоваться', 'menu:start_auth')],
-  ]);
-}
-
-export function mainMenuKeyboard() {
-  return Keyboard.inlineKeyboard([
+export function mainMenuKeyboard(maxUserId) {
+  const rows = [
     [Keyboard.button.callback('Новая', 'menu:new')],
     [Keyboard.button.callback('Выбрать', 'menu:list')],
     [Keyboard.button.callback('Справка', 'menu:help')],
-  ]);
+  ];
+
+  if (maxUserId && Number(maxUserId) === Number(env.ADMIN_ID)) {
+    rows.push([Keyboard.button.callback('Выйти', 'menu:logout', { intent: 'negative' })]);
+  }
+
+  return Keyboard.inlineKeyboard(rows);
 }
 
 export function helpKeyboard() {

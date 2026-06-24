@@ -1131,6 +1131,63 @@ export async function getGlpiUserTickets(glpiUserId, options = {}) {
   }
 }
 
+export async function getGlpiUserTicketsAsRequester(glpiUserId, options = {}) {
+  const userId = Number(glpiUserId || 0);
+
+  if (!userId) {
+    return [];
+  }
+
+  const limit = options.limit || 20;
+
+  try {
+    const userTickets = await glpiApiRequest(
+      'get',
+      `/Ticket_User?criteria[0][table]=glpi_ticketusers&criteria[0][field]=users_id&criteria[0][searchtype]=equals&criteria[0][value]=${userId}&criteria[1][table]=glpi_ticketusers&criteria[1][field]=type&criteria[1][searchtype]=equals&criteria[1][value]=1&range=0-${limit - 1}`
+    );
+
+    if (!Array.isArray(userTickets) || userTickets.length === 0) {
+      return [];
+    }
+
+    const ticketIds = userTickets
+      .map(ut => Number(ut.tickets_id || ut.id || 0))
+      .filter(id => id > 0);
+
+    if (ticketIds.length === 0) {
+      return [];
+    }
+
+    const tickets = [];
+
+    for (const ticketId of ticketIds.slice(0, limit)) {
+      try {
+        const ticket = await getGlpiTicket(ticketId);
+        const status = Number(ticket.status || 0);
+
+        if (status === 6) {
+          continue;
+        }
+
+        tickets.push({
+          ticketId,
+          name: ticket.name || '',
+          status,
+        });
+      } catch (err) {
+        if (!isGlpiTicketNotFoundError(err)) {
+          console.warn('getGlpiUserTicketsAsRequester skip:', ticketId, err.message);
+        }
+      }
+    }
+
+    return tickets;
+  } catch (error) {
+    console.error('getGlpiUserTicketsAsRequester error:', error.message);
+    return [];
+  }
+}
+
 export async function acceptGlpiTicketSolution(ticketId, maxUserId) {
   const content = [
     'Пользователь принял решение через MAX.',

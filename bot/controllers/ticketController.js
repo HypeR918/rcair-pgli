@@ -35,6 +35,7 @@ import {
   acceptGlpiTicketSolution,
   rejectGlpiTicketSolution,
   uploadAndAttachFilesToTicket,
+  getGlpiUserTicketsAsRequester,
 } from '../services/glpiService.js';
 
 import {
@@ -174,7 +175,7 @@ export async function createUserTicket(ctx, title, description, files = []) {
   }
 
   await ctx.reply(parts.join('\n'), {
-    attachments: [mainMenuKeyboard()],
+    attachments: [mainMenuKeyboard(maxUserId)],
   });
 }
 
@@ -187,33 +188,15 @@ export async function showUserTickets(ctx) {
     return;
   }
 
-  const tickets = await getBotUserTickets(maxUserId, 10);
+  let keyboardItems = [];
 
-  if (tickets.length === 0) {
-    await ctx.reply('У вас пока нет заявок.', {
-      attachments: [mainMenuKeyboard()],
-    });
-    return;
-  }
+  const glpiTickets = await getGlpiUserTicketsAsRequester(user.id, { limit: 10 });
 
-  const keyboardItems = [];
-
-  for (const ticket of tickets) {
+  for (const glpiTicket of glpiTickets) {
     try {
-      const ticketId = Number(ticket.glpi_ticket_id || 0);
-
-      if (!ticketId) {
-        continue;
-      }
-
-      const glpiTicket = await getGlpiTicket(ticketId);
-      const status = Number(glpiTicket.status || ticket.status || 0);
-
-      if (status === GlpiTicketStatus.CLOSED) {
-        continue;
-      }
-
-      const title = stripHtml(glpiTicket.name || ticket.title || '');
+      const ticketId = glpiTicket.ticketId;
+      const status = glpiTicket.status;
+      const title = stripHtml(glpiTicket.name || '');
 
       await updateBotUserTicketStatus(ticketId, status, title);
 
@@ -223,29 +206,52 @@ export async function showUserTickets(ctx) {
         statusLabel: getTicketStatusLabel(status),
       });
     } catch (err) {
-      if (isGlpiTicketNotFoundError(err)) {
-        await deleteBotUserTicketByTicketId(ticket.glpi_ticket_id);
-        console.log('Deleted unavailable local ticket:', ticket.glpi_ticket_id);
-        continue;
-      }
-
-      console.error('showUserTickets item error:', ticket.glpi_ticket_id, err.message);
-
-      keyboardItems.push({
-        ticketId: ticket.glpi_ticket_id,
-        title: '',
-        statusLabel: 'недоступна',
-      });
+      console.error('showUserTickets glpi item error:', glpiTicket.ticketId, err.message);
     }
   }
 
   if (keyboardItems.length === 0) {
-    await ctx.reply(
-      'Нет открытых заявок.',
-      {
-        attachments: [mainMenuKeyboard()],
+    const localTickets = await getBotUserTickets(maxUserId, 10);
+
+    for (const ticket of localTickets) {
+      try {
+        const ticketId = Number(ticket.glpi_ticket_id || 0);
+
+        if (!ticketId) {
+          continue;
+        }
+
+        const glpiTicket = await getGlpiTicket(ticketId);
+        const status = Number(glpiTicket.status || ticket.status || 0);
+
+        if (status === GlpiTicketStatus.CLOSED) {
+          continue;
+        }
+
+        const title = stripHtml(glpiTicket.name || ticket.title || '');
+
+        await updateBotUserTicketStatus(ticketId, status, title);
+
+        keyboardItems.push({
+          ticketId,
+          title: truncateText(title, 50),
+          statusLabel: getTicketStatusLabel(status),
+        });
+      } catch (err) {
+        if (isGlpiTicketNotFoundError(err)) {
+          await deleteBotUserTicketByTicketId(ticket.glpi_ticket_id);
+          continue;
+        }
+
+        console.error('showUserTickets local item error:', ticket.glpi_ticket_id, err.message);
       }
-    );
+    }
+  }
+
+  if (keyboardItems.length === 0) {
+    await ctx.reply('Нет открытых заявок.', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
     return;
   }
 
@@ -683,7 +689,7 @@ export function registerTicketActions(bot) {
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
       await ctx.reply('Черновик заявки не найден.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
       return;
     }
@@ -701,7 +707,7 @@ export function registerTicketActions(bot) {
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
       await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась.\nНачните создание заявки заново.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
       return;
     }
@@ -712,7 +718,7 @@ export function registerTicketActions(bot) {
       console.error('ticket:create_with_files error:', error);
       setSession(maxUserId, { state: State.IDLE });
       await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
     }
   });
@@ -725,7 +731,7 @@ export function registerTicketActions(bot) {
 
     if (!session || session.state !== State.WAIT_NEW_TICKET_FILES) {
       await ctx.reply('Черновик заявки не найден. Возможно, сессия сбросилась.\nНачните создание заявки заново.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
       return;
     }
@@ -736,7 +742,7 @@ export function registerTicketActions(bot) {
       console.error('ticket:create_without_files error:', error);
       setSession(maxUserId, { state: State.IDLE });
       await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
     }
   });
@@ -749,7 +755,7 @@ export function registerTicketActions(bot) {
 
     if (!session || session.state !== State.WAIT_TICKET_CONFIRM) {
       await ctx.reply('Черновик заявки не найден.\nНачните создание заявки заново.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
       return;
     }
@@ -763,7 +769,7 @@ export function registerTicketActions(bot) {
       await cancelDraftFiles(session);
       setSession(maxUserId, { state: State.IDLE });
       await ctx.reply('Черновик заявки поврежден. Начните создание заявки заново.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
       return;
     }
@@ -774,7 +780,7 @@ export function registerTicketActions(bot) {
       console.error('ticket:confirm_create error:', error);
       setSession(maxUserId, { state: State.IDLE });
       await ctx.reply('Ошибка при создании заявки. Попробуйте позже.', {
-        attachments: [mainMenuKeyboard()],
+        attachments: [mainMenuKeyboard(maxUserId)],
       });
     }
   });
@@ -809,7 +815,7 @@ export function registerTicketActions(bot) {
         });
 
         await ctx.reply('Главное меню:', {
-          attachments: [mainMenuKeyboard()],
+          attachments: [mainMenuKeyboard(maxUserId)],
         });
 
         return;
@@ -845,6 +851,20 @@ export function registerTicketActions(bot) {
         attachments: [helpKeyboard()],
       }
     );
+  });
+
+  bot.action('menu:logout', async ctx => {
+    if (ctx.user && ctx.user.user_id) {
+      const session = getSession(ctx.user.user_id);
+
+      if (session?.state === State.WAIT_NEW_TICKET_FILES || session?.state === State.WAIT_TICKET_CONFIRM) {
+        await cancelDraftFiles(session);
+      }
+
+      deleteSession(ctx.user.user_id);
+    }
+
+    await ctx.reply('Сессия завершена. Отправьте /start для входа.');
   });
 
   bot.action(/^ticket:open:(\d+)$/, async ctx => {
