@@ -1,6 +1,6 @@
 import {
   getActiveBotUserTickets,
-  updateBotUserTicketStatus,
+  ensureBotUserTicket,
   isFollowupKnown,
   markFollowupAsKnown,
   markTicketSolutionNotified,
@@ -171,9 +171,8 @@ export async function pollUserTickets(bot) {
       try {
         const ticket = await getGlpiTicket(ticketId);
         const status = Number(ticket.status || 0);
-        const title = stripHtml(ticket.name || localTicket.title || '');
 
-        await updateBotUserTicketStatus(ticketId, status, title);
+        await ensureBotUserTicket(localTicket.max_id, ticketId);
 
         await notifySolutionIfNeeded(bot, localTicket, ticketId, status);
         await notifyClosedIfNeeded(bot, localTicket, ticketId, status);

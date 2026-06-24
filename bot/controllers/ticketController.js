@@ -17,7 +17,7 @@ import {
   getBotUserTicket,
   getBotUserTickets,
   markFollowupAsKnown,
-  updateBotUserTicketStatus,
+  ensureBotUserTicket,
   markTicketSolutionNotified,
   markTicketClosedNotified,
   resetTicketSolutionNotified,
@@ -157,7 +157,7 @@ export async function createUserTicket(ctx, title, description, files = []) {
     await cleanupDownloadedFiles(files);
   }
 
-  await saveBotUserTicket(maxUserId, user.id, ticketId, ticketTitle, GlpiTicketStatus.NEW);
+  await saveBotUserTicket(maxUserId, ticketId);
 
   setSession(maxUserId, {
     state: State.IDLE,
@@ -204,8 +204,8 @@ export async function showUserTickets(ctx) {
 
       if (status === GlpiTicketStatus.CLOSED) continue;
 
-      const title = stripHtml(glpiTicket.name || ticket.title || '');
-      await updateBotUserTicketStatus(ticketId, status, title);
+      const title = stripHtml(glpiTicket.name || '');
+      await ensureBotUserTicket(maxUserId, ticketId);
 
       keyboardItems.push({ ticketId, title: truncateText(title, 50), statusLabel: getTicketStatusLabel(status) });
     } catch (err) {
@@ -260,7 +260,7 @@ export async function showTicketDetails(ctx, ticketId) {
   const title = stripHtml(ticket.name || localTicket.title || `Заявка №${ticketId}`);
   const content = stripHtml(ticket.content || '');
 
-  await updateBotUserTicketStatus(ticketId, status, title);
+  await ensureBotUserTicket(maxUserId, ticketId);
 
   const followups = await getGlpiTicketFollowups(ticketId);
   const lastFollowups = [...followups]
@@ -367,7 +367,7 @@ export async function acceptTicketSolution(ctx, ticketId) {
   }
 
   await markTicketSolutionNotified(ticketId);
-  await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.CLOSED);
+  await ensureBotUserTicket(maxUserId, ticketId);
   await markTicketClosedNotified(ticketId);
 
   setSession(maxUserId, {
@@ -398,7 +398,7 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
     await markFollowupAsKnown(ticketId, followupId, content, true);
   }
 
-  await updateBotUserTicketStatus(ticketId, GlpiTicketStatus.PROCESSING);
+  await ensureBotUserTicket(maxUserId, ticketId);
   await resetTicketSolutionNotified(ticketId);
 
   setSession(maxUserId, {

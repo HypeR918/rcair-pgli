@@ -63,38 +63,21 @@ export async function ensureDatabaseSchema() {
       max_id BIGINT NOT NULL,
       email VARCHAR(255) DEFAULT NULL,
       glpi_user_id INT DEFAULT NULL,
-      glpi_user_name VARCHAR(255) DEFAULT NULL,
-      glpi_realname VARCHAR(255) DEFAULT NULL,
-      glpi_firstname VARCHAR(255) DEFAULT NULL,
-      glpi_entity_id INT DEFAULT 0,
-      glpi_entity_name VARCHAR(255) DEFAULT NULL,
-      is_authorized TINYINT(1) DEFAULT 0,
       is_blocked TINYINT(1) DEFAULT 0,
-      last_login_at DATETIME DEFAULT NULL,
-      last_glpi_sync_at DATETIME DEFAULT NULL,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uniq_bot_users_max_id (max_id),
-      KEY idx_bot_users_email (email),
-      KEY idx_bot_users_glpi_user_id (glpi_user_id)
+      KEY idx_bot_users_email (email)
     )`,
 
-    'ALTER TABLE bot_users ADD COLUMN email VARCHAR(255) DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN glpi_user_id INT DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN glpi_user_name VARCHAR(255) DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN glpi_realname VARCHAR(255) DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN glpi_firstname VARCHAR(255) DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN glpi_entity_id INT DEFAULT 0',
-    'ALTER TABLE bot_users ADD COLUMN glpi_entity_name VARCHAR(255) DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN is_authorized TINYINT(1) DEFAULT 0',
-    'ALTER TABLE bot_users ADD COLUMN is_blocked TINYINT(1) DEFAULT 0',
-    'ALTER TABLE bot_users ADD COLUMN last_login_at DATETIME DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN last_glpi_sync_at DATETIME DEFAULT NULL',
-    'ALTER TABLE bot_users ADD COLUMN created_at DATETIME DEFAULT CURRENT_TIMESTAMP',
-    'ALTER TABLE bot_users ADD COLUMN updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP',
-    'ALTER TABLE bot_users ADD UNIQUE KEY uniq_bot_users_max_id (max_id)',
-    'ALTER TABLE bot_users ADD KEY idx_bot_users_email (email)',
-    'ALTER TABLE bot_users ADD KEY idx_bot_users_glpi_user_id (glpi_user_id)',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS glpi_user_name',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS glpi_realname',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS glpi_firstname',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS glpi_entity_id',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS glpi_entity_name',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS is_authorized',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS last_login_at',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS last_glpi_sync_at',
+    'ALTER TABLE bot_users DROP COLUMN IF EXISTS updated_at',
 
     `CREATE TABLE IF NOT EXISTS blocked_max_ids (
       max_id BIGINT PRIMARY KEY,
@@ -133,23 +116,18 @@ export async function ensureDatabaseSchema() {
     `CREATE TABLE IF NOT EXISTS bot_user_tickets (
       id INT AUTO_INCREMENT PRIMARY KEY,
       max_id BIGINT NOT NULL,
-      glpi_user_id INT NOT NULL,
       glpi_ticket_id INT NOT NULL,
-      title VARCHAR(255),
-      status INT DEFAULT NULL,
       solution_notified TINYINT(1) DEFAULT 0,
       closed_notified TINYINT(1) DEFAULT 0,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
       UNIQUE KEY uniq_glpi_ticket_id (glpi_ticket_id),
-      KEY idx_bot_user_tickets_max_id (max_id),
-      KEY idx_bot_user_tickets_glpi_user_id (glpi_user_id)
+      KEY idx_bot_user_tickets_max_id (max_id)
     )`,
 
-    'ALTER TABLE bot_user_tickets ADD COLUMN solution_notified TINYINT(1) DEFAULT 0',
-    'ALTER TABLE bot_user_tickets ADD COLUMN closed_notified TINYINT(1) DEFAULT 0',
-    'ALTER TABLE bot_user_tickets ADD KEY idx_bot_user_tickets_max_id (max_id)',
-    'ALTER TABLE bot_user_tickets ADD KEY idx_bot_user_tickets_glpi_user_id (glpi_user_id)',
+    'ALTER TABLE bot_user_tickets DROP COLUMN IF EXISTS glpi_user_id',
+    'ALTER TABLE bot_user_tickets DROP COLUMN IF EXISTS title',
+    'ALTER TABLE bot_user_tickets DROP COLUMN IF EXISTS status',
 
     `CREATE TABLE IF NOT EXISTS bot_ticket_followups (
       id INT AUTO_INCREMENT PRIMARY KEY,
@@ -293,22 +271,7 @@ export async function getBotUserByMaxId(maxUserId) {
   const normalizedMaxId = normalizeMaxId(maxUserId);
 
   const [rows] = await botPool.execute(
-    `SELECT
-       id,
-       max_id,
-       email,
-       glpi_user_id,
-       glpi_user_name,
-       glpi_realname,
-       glpi_firstname,
-       glpi_entity_id,
-       glpi_entity_name,
-       is_authorized,
-       is_blocked,
-       last_login_at,
-       last_glpi_sync_at,
-       created_at,
-       updated_at
+    `SELECT id, max_id, email, glpi_user_id, is_blocked, created_at
      FROM bot_users
      WHERE max_id = ?
      LIMIT 1`,
@@ -326,22 +289,7 @@ export async function getBotUserByEmail(email) {
   }
 
   const [rows] = await botPool.execute(
-    `SELECT
-       id,
-       max_id,
-       email,
-       glpi_user_id,
-       glpi_user_name,
-       glpi_realname,
-       glpi_firstname,
-       glpi_entity_id,
-       glpi_entity_name,
-       is_authorized,
-       is_blocked,
-       last_login_at,
-       last_glpi_sync_at,
-       created_at,
-       updated_at
+    `SELECT id, max_id, email, glpi_user_id, is_blocked, created_at
      FROM bot_users
      WHERE LOWER(email) = ?
      LIMIT 1`,
@@ -428,51 +376,14 @@ export async function upsertBotUserFromGlpi(maxUserId, email, glpiUser, options 
     throw new Error('Некорректный GLPI user');
   }
 
-  const authorized = options.isAuthorized === undefined
-    ? 1
-    : Number(options.isAuthorized ? 1 : 0);
-
   await botPool.execute(
-    `INSERT INTO bot_users
-      (
-        max_id,
-        email,
-        glpi_user_id,
-        glpi_user_name,
-        glpi_realname,
-        glpi_firstname,
-        glpi_entity_id,
-        glpi_entity_name,
-        is_authorized,
-        is_blocked,
-        last_login_at,
-        last_glpi_sync_at
-      )
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, NOW(), NOW())
+    `INSERT INTO bot_users (max_id, email, glpi_user_id, is_blocked)
+     VALUES (?, ?, ?, 0)
      ON DUPLICATE KEY UPDATE
        email = COALESCE(VALUES(email), email),
        glpi_user_id = VALUES(glpi_user_id),
-       glpi_user_name = VALUES(glpi_user_name),
-       glpi_realname = VALUES(glpi_realname),
-       glpi_firstname = VALUES(glpi_firstname),
-       glpi_entity_id = VALUES(glpi_entity_id),
-       glpi_entity_name = VALUES(glpi_entity_name),
-       is_authorized = VALUES(is_authorized),
-       is_blocked = 0,
-       last_login_at = NOW(),
-       last_glpi_sync_at = NOW(),
-       updated_at = NOW()`,
-    [
-      normalizedMaxId,
-      normalizedEmail || null,
-      normalizedGlpiUser.id,
-      normalizedGlpiUser.name || null,
-      normalizedGlpiUser.realname || null,
-      normalizedGlpiUser.firstname || null,
-      normalizedGlpiUser.entity_id || 0,
-      normalizedGlpiUser.entity_name || null,
-      authorized,
-    ]
+       is_blocked = 0`,
+    [normalizedMaxId, normalizedEmail || null, normalizedGlpiUser.id]
   );
 }
 
@@ -488,25 +399,9 @@ export async function updateBotUserGlpiData(maxUserId, glpiUser, email = null) {
   await botPool.execute(
     `UPDATE bot_users
      SET email = COALESCE(?, email),
-         glpi_user_id = ?,
-         glpi_user_name = ?,
-         glpi_realname = ?,
-         glpi_firstname = ?,
-         glpi_entity_id = ?,
-         glpi_entity_name = ?,
-         last_glpi_sync_at = NOW(),
-         updated_at = NOW()
+         glpi_user_id = ?
      WHERE max_id = ?`,
-    [
-      normalizedEmail || null,
-      normalizedGlpiUser.id,
-      normalizedGlpiUser.name || null,
-      normalizedGlpiUser.realname || null,
-      normalizedGlpiUser.firstname || null,
-      normalizedGlpiUser.entity_id || 0,
-      normalizedGlpiUser.entity_name || null,
-      normalizedMaxId,
-    ]
+    [normalizedEmail || null, normalizedGlpiUser.id, normalizedMaxId]
   );
 }
 
@@ -515,10 +410,7 @@ export async function markBotUserAuthorized(maxUserId) {
 
   await botPool.execute(
     `UPDATE bot_users
-     SET is_authorized = 1,
-         is_blocked = 0,
-         last_login_at = NOW(),
-         updated_at = NOW()
+     SET is_blocked = 0
      WHERE max_id = ?`,
     [normalizedMaxId]
   );
@@ -533,37 +425,19 @@ export async function findGlpiUserByMaxId(maxUserId) {
     return null;
   }
 
-  if (botUser && Number(botUser.is_authorized || 0) === 1) {
-    let freshUser = null;
+  let freshUser = null;
 
-    if (botUser.glpi_user_id) {
-      freshUser = await getFreshGlpiUserById(botUser.glpi_user_id);
-    }
+  if (botUser?.glpi_user_id) {
+    freshUser = await getFreshGlpiUserById(botUser.glpi_user_id);
+  }
 
-    if (!freshUser && botUser.email) {
-      freshUser = await getFreshGlpiUserByEmail(botUser.email);
-    }
+  if (!freshUser && botUser?.email) {
+    freshUser = await getFreshGlpiUserByEmail(botUser.email);
+  }
 
-    if (freshUser) {
-      await updateBotUserGlpiData(normalizedMaxId, freshUser, botUser.email);
-
-      return {
-        ...freshUser,
-        email: botUser.email || freshUser.email || '',
-      };
-    }
-
-    if (botUser.glpi_user_id) {
-      return {
-        id: Number(botUser.glpi_user_id),
-        name: botUser.glpi_user_name || '',
-        realname: botUser.glpi_realname || '',
-        firstname: botUser.glpi_firstname || '',
-        entity_id: Number(botUser.glpi_entity_id || 0),
-        entity_name: botUser.glpi_entity_name || '',
-        email: botUser.email || '',
-      };
-    }
+  if (freshUser) {
+    await updateBotUserGlpiData(normalizedMaxId, freshUser, botUser.email);
+    return { ...freshUser, email: botUser.email || freshUser.email || '' };
   }
 
   try {
@@ -588,9 +462,7 @@ export async function findGlpiUserByMaxId(maxUserId) {
     const user = normalizeGlpiUserRow(rows[0]);
 
     if (user) {
-      await upsertBotUserFromGlpi(normalizedMaxId, user.email || null, user, {
-        isAuthorized: true,
-      });
+      await upsertBotUserFromGlpi(normalizedMaxId, user.email || null, user);
     }
 
     return user;
@@ -612,21 +484,15 @@ export async function linkMaxIdToGlpiUser(glpiUserId, maxUserId, email = null) {
   const user = await getFreshGlpiUserById(normalizedGlpiUserId);
 
   if (user) {
-    await upsertBotUserFromGlpi(normalizedMaxId, normalizedEmail || user.email || null, user, {
-      isAuthorized: true,
-    });
+    await upsertBotUserFromGlpi(normalizedMaxId, normalizedEmail || user.email || null, user);
   } else {
     await botPool.execute(
-      `INSERT INTO bot_users
-        (max_id, email, glpi_user_id, is_authorized, is_blocked, last_login_at)
-       VALUES (?, ?, ?, 1, 0, NOW())
+      `INSERT INTO bot_users (max_id, email, glpi_user_id, is_blocked)
+       VALUES (?, ?, ?, 0)
        ON DUPLICATE KEY UPDATE
          email = COALESCE(VALUES(email), email),
          glpi_user_id = VALUES(glpi_user_id),
-         is_authorized = 1,
-         is_blocked = 0,
-         last_login_at = NOW(),
-         updated_at = NOW()`,
+         is_blocked = 0`,
       [normalizedMaxId, normalizedEmail || null, normalizedGlpiUserId]
     );
   }
@@ -716,24 +582,21 @@ export async function rejectSdsRequest(requestId, decisionText, ticketStatus) {
   );
 }
 
-export async function saveBotUserTicket(maxUserId, glpiUserId, ticketId, title, status = 1) {
+export async function saveBotUserTicket(maxUserId, glpiTicketId) {
   await botPool.execute(
     `INSERT INTO bot_user_tickets
-      (max_id, glpi_user_id, glpi_ticket_id, title, status)
-     VALUES (?, ?, ?, ?, ?)
+      (max_id, glpi_ticket_id)
+     VALUES (?, ?)
      ON DUPLICATE KEY UPDATE
       max_id = VALUES(max_id),
-      glpi_user_id = VALUES(glpi_user_id),
-      title = VALUES(title),
-      status = VALUES(status),
       updated_at = NOW()`,
-    [maxUserId, glpiUserId, ticketId, title, status]
+    [maxUserId, glpiTicketId]
   );
 }
 
 export async function getBotUserTicket(maxUserId, ticketId) {
   const [rows] = await botPool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT id, max_id, glpi_ticket_id, solution_notified, closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
        AND glpi_ticket_id = ?
@@ -746,7 +609,7 @@ export async function getBotUserTicket(maxUserId, ticketId) {
 
 export async function getBotUserTickets(maxUserId, limit = 10) {
   const [rows] = await botPool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT id, max_id, glpi_ticket_id, solution_notified, closed_notified
      FROM bot_user_tickets
      WHERE max_id = ?
      ORDER BY glpi_ticket_id DESC
@@ -759,9 +622,8 @@ export async function getBotUserTickets(maxUserId, limit = 10) {
 
 export async function getActiveBotUserTickets(limit = 50) {
   const [rows] = await botPool.execute(
-    `SELECT id, max_id, glpi_user_id, glpi_ticket_id, title, status, solution_notified, closed_notified
+    `SELECT id, max_id, glpi_ticket_id, solution_notified, closed_notified
      FROM bot_user_tickets
-     WHERE status IS NULL OR status < 6
      ORDER BY id ASC
      LIMIT ?`,
     [limit]
@@ -770,22 +632,11 @@ export async function getActiveBotUserTickets(limit = 50) {
   return rows;
 }
 
-export async function updateBotUserTicketStatus(ticketId, status, title = null) {
-  if (title) {
-    await botPool.execute(
-      `UPDATE bot_user_tickets
-       SET status = ?, title = ?
-       WHERE glpi_ticket_id = ?`,
-      [status, title, ticketId]
-    );
-    return;
-  }
-
+export async function ensureBotUserTicket(maxUserId, glpiTicketId) {
   await botPool.execute(
-    `UPDATE bot_user_tickets
-     SET status = ?
-     WHERE glpi_ticket_id = ?`,
-    [status, ticketId]
+    `INSERT IGNORE INTO bot_user_tickets (max_id, glpi_ticket_id)
+     VALUES (?, ?)`,
+    [maxUserId, glpiTicketId]
   );
 }
 
