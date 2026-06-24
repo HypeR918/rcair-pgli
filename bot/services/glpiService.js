@@ -1133,57 +1133,35 @@ export async function getGlpiUserTickets(glpiUserId, options = {}) {
 
 export async function getGlpiUserTicketsAsRequester(glpiUserId, options = {}) {
   const userId = Number(glpiUserId || 0);
-
-  if (!userId) {
-    return [];
-  }
+  if (!userId) return [];
 
   const limit = options.limit || 20;
 
   try {
-    const userTickets = await glpiApiRequest(
+    const result = await glpiApiRequest(
       'get',
-      `/Ticket_User?criteria[0][table]=glpi_ticketusers&criteria[0][field]=users_id&criteria[0][searchtype]=equals&criteria[0][value]=${userId}&criteria[1][table]=glpi_ticketusers&criteria[1][field]=type&criteria[1][searchtype]=equals&criteria[1][value]=1&range=0-${limit - 1}`
+      `/Ticket?as_map=0&criteria[0][table]=glpi_tickets&criteria[0][field]=12&criteria[0][searchtype]=not+equals&criteria[0][value]=6&criteria[1][table]=glpi_ticketusers&criteria[1][field]=users_id&criteria[1][searchtype]=equals&criteria[1][value]=${userId}&criteria[2][table]=glpi_ticketusers&criteria[2][field]=type&criteria[2][searchtype]=equals&criteria[2][value]=1&forcedisplay[0]=2&forcedisplay[1]=1&forcedisplay[2]=12&range=0-${limit - 1}`
     );
 
-    if (!Array.isArray(userTickets) || userTickets.length === 0) {
-      return [];
+    let rows = [];
+    if (Array.isArray(result)) {
+      rows = result;
+    } else if (result && Array.isArray(result.data)) {
+      rows = result.data;
+    } else if (result && typeof result === 'object') {
+      rows = Object.values(result).filter(v => v && typeof v === 'object');
     }
 
-    const ticketIds = userTickets
-      .map(ut => Number(ut.tickets_id || ut.id || 0))
-      .filter(id => id > 0);
+    if (rows.length === 0) return [];
 
-    if (ticketIds.length === 0) {
-      return [];
-    }
-
-    const tickets = [];
-
-    for (const ticketId of ticketIds.slice(0, limit)) {
-      try {
-        const ticket = await getGlpiTicket(ticketId);
-        const status = Number(ticket.status || 0);
-
-        if (status === 6) {
-          continue;
-        }
-
-        tickets.push({
-          ticketId,
-          name: ticket.name || '',
-          status,
-        });
-      } catch (err) {
-        if (!isGlpiTicketNotFoundError(err)) {
-          console.warn('getGlpiUserTicketsAsRequester skip:', ticketId, err.message);
-        }
+    return rows.map(row => {
+      if (Array.isArray(row)) {
+        return { ticketId: Number(row[0] || 0), name: String(row[1] || ''), status: Number(row[2] || 0) };
       }
-    }
-
-    return tickets;
+      return { ticketId: Number(row.id || row[2] || 0), name: String(row.name || row[1] || ''), status: Number(row.status || row[12] || 0) };
+    }).filter(t => t.ticketId > 0);
   } catch (error) {
-    console.error('getGlpiUserTicketsAsRequester error:', error.message);
+    console.warn('getGlpiUserTicketsAsRequester warning:', error.message);
     return [];
   }
 }

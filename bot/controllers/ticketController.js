@@ -188,64 +188,56 @@ export async function showUserTickets(ctx) {
     return;
   }
 
-  const localTickets = await getBotUserTickets(maxUserId, 10);
-  const glpiTickets = await getGlpiUserTicketsAsRequester(user.id, { limit: 20 });
+  const localTickets = await getBotUserTickets(maxUserId, 20);
+  const localIds = new Set();
 
-  const mergedMap = new Map();
+  const keyboardItems = [];
 
   for (const ticket of localTickets) {
     const ticketId = Number(ticket.glpi_ticket_id || 0);
     if (!ticketId) continue;
-    mergedMap.set(ticketId, { ticketId, source: 'local', ticket });
-  }
+    localIds.add(ticketId);
 
-  for (const glpiTicket of glpiTickets) {
-    const ticketId = glpiTicket.ticketId;
-    if (!ticketId || mergedMap.has(ticketId)) continue;
-    mergedMap.set(ticketId, { ticketId, source: 'glpi', glpiTicket });
-  }
-
-  if (mergedMap.size === 0) {
-    await ctx.reply('У вас пока нет заявок.', {
-      attachments: [mainMenuKeyboard(maxUserId)],
-    });
-    return;
-  }
-
-  const keyboardItems = [];
-
-  for (const [ticketId, entry] of mergedMap) {
     try {
       const glpiTicket = await getGlpiTicket(ticketId);
       const status = Number(glpiTicket.status || 0);
 
-      if (status === GlpiTicketStatus.CLOSED) {
-        continue;
-      }
+      if (status === GlpiTicketStatus.CLOSED) continue;
 
-      const title = stripHtml(glpiTicket.name || '');
-
+      const title = stripHtml(glpiTicket.name || ticket.title || '');
       await updateBotUserTicketStatus(ticketId, status, title);
 
-      keyboardItems.push({
-        ticketId,
-        title: truncateText(title, 50),
-        statusLabel: getTicketStatusLabel(status),
-      });
+      keyboardItems.push({ ticketId, title: truncateText(title, 50), statusLabel: getTicketStatusLabel(status) });
     } catch (err) {
       if (isGlpiTicketNotFoundError(err)) {
-        if (entry.source === 'local') {
-          await deleteBotUserTicketByTicketId(ticketId);
-        }
-        continue;
+        await deleteBotUserTicketByTicketId(ticketId);
       }
+    }
+  }
 
-      console.error('showUserTickets item error:', ticketId, err.message);
+  const glpiTickets = await getGlpiUserTicketsAsRequester(user.id, { limit: 20 });
+
+  for (const glpiTicket of glpiTickets) {
+    const ticketId = glpiTicket.ticketId;
+    if (!ticketId || localIds.has(ticketId)) continue;
+
+    try {
+      const full = await getGlpiTicket(ticketId);
+      const status = Number(full.status || 0);
+
+      if (status === GlpiTicketStatus.CLOSED) continue;
+
+      const title = stripHtml(full.name || '');
+      keyboardItems.push({ ticketId, title: truncateText(title, 50), statusLabel: getTicketStatusLabel(status) });
+    } catch (err) {
+      if (!isGlpiTicketNotFoundError(err)) {
+        console.error('showUserTickets external item error:', ticketId, err.message);
+      }
     }
   }
 
   if (keyboardItems.length === 0) {
-    await ctx.reply('Нет открытых заявок.', {
+    await ctx.reply('У вас пока нет заявок.', {
       attachments: [mainMenuKeyboard(maxUserId)],
     });
     return;

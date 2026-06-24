@@ -61,6 +61,18 @@ export async function pollPendingSdsRequests(bot) {
           continue;
         }
       } catch (err) {
+        const msg = String(err.message || '').toLowerCase();
+
+        if (msg.includes('404') || msg.includes('not found') || msg.includes('не найден')) {
+          console.log('SDS ticket not found, skipping:', request.glpi_ticket_id);
+          await approveSdsRequest(
+            request.id,
+            'Заявка удалена из GLPI',
+            null
+          );
+          continue;
+        }
+
         console.error(
           'pollPendingSdsRequests item error:',
           request.glpi_ticket_id,
