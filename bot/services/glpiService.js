@@ -1143,7 +1143,7 @@ export async function getGlpiUserTicketsAsRequester(glpiUserId, options = {}) {
     const [rows] = await glpiPool.execute(
       `SELECT t.id, t.name, t.status
        FROM glpi_tickets t
-       INNER JOIN glpi_ticketusers tu ON tu.tickets_id = t.id
+       INNER JOIN glpi_tickets_users tu ON tu.tickets_id = t.id
        WHERE tu.users_id = ?
          AND tu.type = 1
          AND t.status != 6

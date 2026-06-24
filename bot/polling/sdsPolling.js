@@ -1,6 +1,7 @@
 import {
   getPendingSdsRequests,
   updateSdsRequestTicketStatus,
+  approveSdsRequest,
 } from '../services/dbService.js';
 
 import {
