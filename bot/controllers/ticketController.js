@@ -115,7 +115,7 @@ async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
     };
   } catch (error) {
     if (isGlpiTicketNotFoundError(error)) {
-      await deleteMissingTicketAndReply(ctx, ticketId, localTicket.title);
+      await deleteMissingTicketAndReply(ctx, ticketId, '');
       return null;
     }
 
@@ -256,8 +256,9 @@ export async function showTicketDetails(ctx, ticketId) {
   }
 
   const { localTicket, glpiTicket: ticket } = checked;
+  const maxUserId = ctx.user.user_id;
   const status = Number(ticket.status || 0);
-  const title = stripHtml(ticket.name || localTicket.title || `Заявка №${ticketId}`);
+  const title = stripHtml(ticket.name || `Заявка №${ticketId}`);
   const content = stripHtml(ticket.content || '');
 
   await ensureBotUserTicket(maxUserId, ticketId);
@@ -300,8 +301,8 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
     return;
   }
 
-  const { localTicket } = checked;
-  const ticketTitle = stripHtml(localTicket.title || '');
+  const { localTicket, glpiTicket } = checked;
+  const ticketTitle = stripHtml(glpiTicket.name || '');
 
   const content = [
     'Комментарий пользователя из MAX:',
@@ -331,7 +332,6 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
 
   setSession(maxUserId, {
     state: State.IDLE,
-    glpiUserId: localTicket.glpi_user_id,
   });
 
   const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
@@ -357,8 +357,8 @@ export async function acceptTicketSolution(ctx, ticketId) {
     return;
   }
 
-  const { localTicket } = checked;
-  const ticketTitle = stripHtml(localTicket.title || '');
+  const { localTicket, glpiTicket } = checked;
+  const ticketTitle = stripHtml(glpiTicket.name || '');
 
   const { followupId, content } = await acceptGlpiTicketSolution(ticketId, maxUserId);
 
@@ -373,7 +373,6 @@ export async function acceptTicketSolution(ctx, ticketId) {
   setSession(maxUserId, {
     state: State.WAIT_RATING_CHOICE,
     ticketId,
-    glpiUserId: localTicket.glpi_user_id,
   });
 
   await ctx.reply('Вы остались довольны качеством нашей работы?', {
@@ -389,8 +388,8 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
     return;
   }
 
-  const { localTicket } = checked;
-  const ticketTitle = stripHtml(localTicket.title || '');
+  const { localTicket, glpiTicket } = checked;
+  const ticketTitle = stripHtml(glpiTicket.name || '');
 
   const { followupId, content } = await rejectGlpiTicketSolution(ticketId, reason);
 
@@ -403,7 +402,6 @@ export async function rejectTicketSolution(ctx, ticketId, reason) {
 
   setSession(maxUserId, {
     state: State.IDLE,
-    glpiUserId: localTicket.glpi_user_id,
   });
 
   const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
@@ -467,7 +465,6 @@ async function finishTicketDraft(ctx, session, withFiles) {
 
   setSession(maxUserId, {
     state: State.WAIT_TICKET_CONFIRM,
-    glpiUserId: session.glpiUserId,
     ticketDraft: {
       title,
       description,
@@ -878,13 +875,12 @@ export function registerTicketActions(bot) {
         return;
       }
 
-      const { localTicket } = checked;
-      const ticketTitle = stripHtml(localTicket.title || '');
+      const { localTicket, glpiTicket } = checked;
+      const ticketTitle = stripHtml(glpiTicket.name || '');
 
       setSession(maxUserId, {
         state: State.WAIT_TICKET_COMMENT,
         ticketId,
-        glpiUserId: localTicket.glpi_user_id,
       });
 
       const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
@@ -918,13 +914,12 @@ export function registerTicketActions(bot) {
         return;
       }
 
-      const { localTicket } = checked;
-      const ticketTitle = stripHtml(localTicket.title || '');
+      const { localTicket, glpiTicket } = checked;
+      const ticketTitle = stripHtml(glpiTicket.name || '');
 
       setSession(maxUserId, {
         state: State.WAIT_REJECT_SOLUTION_REASON,
         ticketId,
-        glpiUserId: localTicket.glpi_user_id,
       });
 
       const titlePart = ticketTitle ? ` ${ticketTitle}` : '';
@@ -965,7 +960,6 @@ export function registerTicketActions(bot) {
     setSession(maxUserId, {
       state: State.WAIT_NEGATIVE_RATING_REASON,
       ticketId,
-      glpiUserId: localTicket.glpi_user_id,
     });
 
     await ctx.reply('Нам жаль, что Вы остались недовольны результатом\nПомогите нам стать лучше. Расскажите, что было не так?');
