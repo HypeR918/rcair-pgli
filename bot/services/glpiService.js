@@ -1135,22 +1135,36 @@ export async function getGlpiUserTicketsAsRequester(glpiUserId, options = {}) {
   const userId = Number(glpiUserId || 0);
   if (!userId) return [];
 
-  const limit = options.limit || 20;
+  const limit = options.limit || 50;
 
   try {
     const { glpiPool } = await import('./dbService.js');
 
-    const [rows] = await glpiPool.execute(
-      `SELECT t.id, t.name, t.status
-       FROM glpi_tickets t
-       INNER JOIN glpi_tickets_users tu ON tu.tickets_id = t.id
-       WHERE tu.users_id = ?
-         AND tu.type = 1
-         AND t.status != 6
-       ORDER BY t.id DESC
-       LIMIT ?`,
-      [userId, limit]
-    );
+    let rows;
+    try {
+      [rows] = await glpiPool.execute(
+        `SELECT t.id, t.name, t.status
+         FROM glpi_tickets t
+         LEFT JOIN glpi_tickets_users tu ON tu.tickets_id = t.id AND tu.type = 1
+         WHERE (tu.users_id = ? OR t.users_id_recipient = ?)
+           AND t.status != 6
+         ORDER BY t.id DESC
+         LIMIT ?`,
+        [userId, userId, limit]
+      );
+    } catch (e) {
+      [rows] = await glpiPool.execute(
+        `SELECT t.id, t.name, t.status
+         FROM glpi_tickets t
+         INNER JOIN glpi_tickets_users tu ON tu.tickets_id = t.id
+         WHERE tu.users_id = ?
+           AND tu.type = 1
+           AND t.status != 6
+         ORDER BY t.id DESC
+         LIMIT ?`,
+        [userId, limit]
+      );
+    }
 
     return (rows || []).map(row => ({
       ticketId: Number(row.id || 0),
