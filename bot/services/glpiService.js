@@ -1211,10 +1211,7 @@ export async function acceptGlpiTicketSolution(ticketId, maxUserId) {
     status: GlpiTicketStatus.CLOSED,
   });
 
-  return {
-    followupId,
-    content,
-  };
+  return { followupId, content };
 }
 
 export async function rejectGlpiTicketSolution(ticketId, reason) {

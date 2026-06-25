@@ -57,6 +57,14 @@ async function sendMessageToMaxUser(bot, maxUserId, text, options = {}) {
 
 async function notifyNewFollowups(bot, localTicket, ticketId, status) {
   const followups = await getGlpiTicketFollowups(ticketId);
+  let title = '';
+
+  try {
+    const glpiTicket = await getGlpiTicket(ticketId);
+    title = stripHtml(glpiTicket.name || '');
+  } catch (e) {
+    // ignore
+  }
 
   for (const followup of followups) {
     const followupId = Number(followup.id || 0);
@@ -82,13 +90,20 @@ async function notifyNewFollowups(bot, localTicket, ticketId, status) {
       continue;
     }
 
-    const title = stripHtml(localTicket.title || '');
+    if (content.includes('Пользователь принял решение через MAX') ||
+        content.includes('Пользователь отклонил решение через MAX') ||
+        content.includes('Комментарий пользователя из MAX:')) {
+      await markFollowupAsKnown(ticketId, followupId, content, true);
+      continue;
+    }
+
+    const titlePart = title ? ` ${title}` : '';
 
     await sendMessageToMaxUser(
       bot,
       localTicket.max_id,
       [
-        `Новый комментарий по заявке №${ticketId} ${title}:`,
+        `Новый комментарий по заявке №${ticketId}${titlePart}:`,
         '',
         truncateText(content, 3000),
       ].join('\n'),
@@ -111,13 +126,22 @@ async function notifySolutionIfNeeded(bot, localTicket, ticketId, status) {
   }
 
   const solutionText = await getLatestTicketSolutionText(ticketId);
-  const title = stripHtml(localTicket.title || '');
+  let title = '';
+
+  try {
+    const glpiTicket = await getGlpiTicket(ticketId);
+    title = stripHtml(glpiTicket.name || '');
+  } catch (e) {
+    // ignore
+  }
+
+  const titlePart = title ? ` ${title}` : '';
 
   await sendMessageToMaxUser(
     bot,
     localTicket.max_id,
     [
-      `По заявке №${ticketId} ${title} предложено решение.`,
+      `По заявке №${ticketId}${titlePart} предложено решение.`,
       '',
       solutionText ? truncateText(solutionText, 3000) : 'Текст решения не указан.',
       '',
@@ -140,12 +164,21 @@ async function notifyClosedIfNeeded(bot, localTicket, ticketId, status) {
     return;
   }
 
-  const title = stripHtml(localTicket.title || '');
+  let title = '';
+
+  try {
+    const glpiTicket = await getGlpiTicket(ticketId);
+    title = stripHtml(glpiTicket.name || '');
+  } catch (e) {
+    // ignore
+  }
+
+  const titlePart = title ? ` ${title}` : '';
 
   await sendMessageToMaxUser(
     bot,
     localTicket.max_id,
-    `Заявка №${ticketId} ${title} закрыта.`
+    `Заявка №${ticketId}${titlePart} закрыта.`
   );
 
   await markTicketClosedNotified(ticketId);
