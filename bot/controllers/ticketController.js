@@ -103,19 +103,20 @@ async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
 
   if (!localTicket) {
     try {
-      const glpiTicket = await getGlpiTicket(ticketId);
-      const { glpiPool } = await import('../services/dbService.js');
+      const user = await findGlpiUserByMaxId(maxUserId);
+      if (user) {
+        const { glpiPool } = await import('../services/dbService.js');
+        const [rows] = await glpiPool.execute(
+          `SELECT 1 FROM glpi_tickets_users
+           WHERE tickets_id = ? AND users_id = ? AND type = 1
+           LIMIT 1`,
+          [ticketId, user.id]
+        );
 
-      const [rows] = await glpiPool.execute(
-        `SELECT 1 FROM glpi_tickets_users
-         WHERE tickets_id = ? AND users_id = (SELECT glpi_user_id FROM bot_users WHERE max_id = ? LIMIT 1) AND type = 1
-         LIMIT 1`,
-        [ticketId, maxUserId]
-      );
-
-      if (rows.length > 0) {
-        await ensureBotUserTicket(maxUserId, ticketId);
-        localTicket = await getBotUserTicket(maxUserId, ticketId);
+        if (rows.length > 0) {
+          await ensureBotUserTicket(maxUserId, ticketId);
+          localTicket = await getBotUserTicket(maxUserId, ticketId);
+        }
       }
     } catch (err) {
       // silently ignore
@@ -249,6 +250,7 @@ export async function showUserTickets(ctx) {
       if (status === GlpiTicketStatus.CLOSED) continue;
 
       const title = stripHtml(full.name || '');
+      await ensureBotUserTicket(maxUserId, ticketId);
       keyboardItems.push({ ticketId, title: truncateText(title, 50), statusLabel: getTicketStatusLabel(status) });
     } catch (err) {
       if (!isGlpiTicketNotFoundError(err)) {
