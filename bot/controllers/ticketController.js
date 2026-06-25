@@ -966,6 +966,12 @@ export function registerTicketActions(bot) {
     const ticketId = Number(ctx.match[1]);
     const rating = Number(ctx.match[2]);
 
+    const existingRating = await getBotTicketRating(ticketId);
+    if (existingRating) {
+      await ctx.reply('Ваша оценка уже учтена.');
+      return;
+    }
+
     try {
       await rateTicket(ctx, ticketId, rating);
     } catch (error) {
@@ -979,13 +985,18 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
+
+    const existingRating = await getBotTicketRating(ticketId);
+    if (existingRating) {
+      await ctx.reply('Ваша оценка уже учтена.');
+      return;
+    }
+
     const checked = await ensureGlpiTicketExistsForUser(ctx, ticketId);
 
     if (!checked) {
       return;
     }
-
-    const { localTicket } = checked;
 
     setSession(maxUserId, {
       state: State.WAIT_NEGATIVE_RATING_REASON,
