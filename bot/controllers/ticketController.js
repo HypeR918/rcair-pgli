@@ -99,7 +99,28 @@ async function deleteMissingTicketAndReply(ctx, ticketId, title) {
 
 async function ensureGlpiTicketExistsForUser(ctx, ticketId) {
   const maxUserId = ctx.user.user_id;
-  const localTicket = await getBotUserTicket(maxUserId, ticketId);
+  let localTicket = await getBotUserTicket(maxUserId, ticketId);
+
+  if (!localTicket) {
+    try {
+      const glpiTicket = await getGlpiTicket(ticketId);
+      const { glpiPool } = await import('../services/dbService.js');
+
+      const [rows] = await glpiPool.execute(
+        `SELECT 1 FROM glpi_tickets_users
+         WHERE tickets_id = ? AND users_id = (SELECT glpi_user_id FROM bot_users WHERE max_id = ? LIMIT 1) AND type = 1
+         LIMIT 1`,
+        [ticketId, maxUserId]
+      );
+
+      if (rows.length > 0) {
+        await ensureBotUserTicket(maxUserId, ticketId);
+        localTicket = await getBotUserTicket(maxUserId, ticketId);
+      }
+    } catch (err) {
+      // silently ignore
+    }
+  }
 
   if (!localTicket) {
     await ctx.reply('Эта заявка не найдена среди ваших активных заявок.');
