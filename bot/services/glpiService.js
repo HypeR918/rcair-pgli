@@ -221,7 +221,14 @@ function isDuplicateRequesterError(error) {
   );
 }
 
-export async function glpiInitSession() {
+let cachedSessionToken = null;
+let sessionExpiresAt = 0;
+
+async function getGlpiSession() {
+  if (cachedSessionToken && Date.now() < sessionExpiresAt) {
+    return cachedSessionToken;
+  }
+
   if (!env.GLPI_API_USER_TOKEN) {
     throw new Error('GLPI_API_USER_TOKEN is not configured');
   }
@@ -241,7 +248,10 @@ export async function glpiInitSession() {
     throw new Error('GLPI initSession failed');
   }
 
-  return res.data.session_token;
+  cachedSessionToken = res.data.session_token;
+  sessionExpiresAt = Date.now() + 30 * 60 * 1000;
+
+  return cachedSessionToken;
 }
 
 export async function glpiKillSession(sessionToken) {
@@ -255,12 +265,17 @@ export async function glpiKillSession(sessionToken) {
       validateStatus: () => true,
     });
   } catch (err) {
-    console.error('GLPI killSession error:', err.message);
+    console.error('GLpiKillSession error:', err.message);
   }
 }
 
+function invalidateSession() {
+  cachedSessionToken = null;
+  sessionExpiresAt = 0;
+}
+
 export async function glpiApiRequest(method, path, data = null) {
-  const sessionToken = await glpiInitSession();
+  let sessionToken = await getGlpiSession();
 
   try {
     const baseUrl = getGlpiApiBaseUrl();
@@ -285,21 +300,37 @@ export async function glpiApiRequest(method, path, data = null) {
 
     const res = await axios(config);
 
+    if (res.status === 401) {
+      invalidateSession();
+      sessionToken = await getGlpiSession();
+      config.headers = getGlpiApiHeaders(sessionToken);
+      const retry = await axios(config);
+
+      if (retry.status < 200 || retry.status >= 300) {
+        console.error('GLPI API request failed:', method, finalPath, retry.status, retry.data);
+        throw new Error(`GLPI API request failed: ${retry.status}`);
+      }
+
+      return retry.data;
+    }
+
     if (res.status < 200 || res.status >= 300) {
       console.error('GLPI API request failed:', method, finalPath, res.status, res.data);
-      throw new Error(
-        `GLPI API request failed: ${res.status} ${JSON.stringify(res.data)}`
-      );
+      throw new Error(`GLPI API request failed: ${res.status}`);
     }
 
     return res.data;
-  } finally {
-    await glpiKillSession(sessionToken);
+  } catch (err) {
+    const msg = String(err.message || '').toLowerCase();
+    if (msg.includes('session') || msg.includes('401')) {
+      invalidateSession();
+    }
+    throw err;
   }
 }
 
 export async function glpiMultipartRequest(method, path, form) {
-  const sessionToken = await glpiInitSession();
+  let sessionToken = await getGlpiSession();
 
   try {
     const baseUrl = getGlpiApiBaseUrl();
@@ -362,8 +393,12 @@ export async function glpiMultipartRequest(method, path, form) {
     }
 
     return res.data;
-  } finally {
-    await glpiKillSession(sessionToken);
+  } catch (err) {
+    const msg = String(err.message || '').toLowerCase();
+    if (msg.includes('session') || msg.includes('401')) {
+      invalidateSession();
+    }
+    throw err;
   }
 }
 
