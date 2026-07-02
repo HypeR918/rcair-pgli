@@ -7,6 +7,8 @@ import { mainMenuKeyboard, startKeyboard } from '../ui/keyboards.js';
 import {
   generateEmailVerificationCode,
   sendEmailVerificationCode,
+  hashVerificationCode,
+  verifyCodeHash,
 } from '../services/emailService.js';
 
 import {
@@ -77,18 +79,38 @@ export async function showMenu(ctx) {
 export async function startEmailVerification(ctx, email, flow) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(email);
+  const session = getSession(maxUserId);
+
+  const cooldownMs = env.EMAIL_CODE_RESEND_COOLDOWN_MS;
+
+  if (
+    session?.verificationCodeHash &&
+    session?.verificationSentAt &&
+    Date.now() - session.verificationSentAt < cooldownMs
+  ) {
+    const remainingSeconds = Math.ceil(
+      (cooldownMs - (Date.now() - session.verificationSentAt)) / 1000
+    );
+
+    await ctx.reply(`Повторную отправку можно запросить через ${remainingSeconds} сек.`);
+    return;
+  }
+
   const code = generateEmailVerificationCode();
+
+  // отправляем письмо ДО сохранения сессии, чтобы код не остался в базе при сбое
+  await sendEmailVerificationCode(normalizedEmail, code);
 
   setSession(maxUserId, {
     state: State.WAIT_EMAIL_VERIFICATION_CODE,
     verificationEmail: normalizedEmail,
-    verificationCode: code,
+    verificationCodeHash: hashVerificationCode(code),
     verificationAttempts: 0,
-    verificationExpiresAt: Date.now() + 10 * 60 * 1000,
+    verificationExpiresAt: Date.now() + env.EMAIL_CODE_TTL_MS,
     verificationFlow: flow,
+    verificationSentAt: Date.now(),
   });
 
-  await sendEmailVerificationCode(normalizedEmail, code);
   await ctx.reply('На указанную почту отправлен код подтверждения');
   await ctx.reply('Введите код подтверждения из письма');
 }
@@ -198,15 +220,20 @@ export async function handleVerificationCode(ctx, session, text) {
     return;
   }
 
-  if (text !== session.verificationCode) {
+  const codeValid =
+    typeof text === 'string' &&
+    /^\d{6}$/.test(text) &&
+    verifyCodeHash(text, session.verificationCodeHash);
+
+  if (!codeValid) {
     const attempts = Number(session.verificationAttempts || 0) + 1;
     session.verificationAttempts = attempts;
 
-    if (attempts >= 2) {
+    if (attempts >= env.EMAIL_CODE_MAX_ATTEMPTS) {
       await blockMaxId(maxUserId);
       deleteSession(maxUserId);
 
-      await ctx.reply('Код введен неверно два раза. Ваш MAX ID заблокирован');
+      await ctx.reply('Код введен неверно несколько раз. Ваш MAX ID заблокирован');
       return;
     }
 

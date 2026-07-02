@@ -26,6 +26,11 @@ export const env = {
   EMAIL_VERIFICATION_ENABLED:
     String(process.env.EMAIL_VERIFICATION_ENABLED || 'false').toLowerCase() === 'true',
 
+  EMAIL_CODE_SECRET: process.env.EMAIL_CODE_SECRET || process.env.BOT_TOKEN,
+  EMAIL_CODE_RESEND_COOLDOWN_MS: Number(process.env.EMAIL_CODE_RESEND_COOLDOWN_MS || 60000),
+  EMAIL_CODE_MAX_ATTEMPTS: Number(process.env.EMAIL_CODE_MAX_ATTEMPTS || 3),
+  EMAIL_CODE_TTL_MS: Number(process.env.EMAIL_CODE_TTL_MS || 10 * 60 * 1000),
+
   SMTP_HOST: process.env.SMTP_HOST,
   SMTP_PORT: Number(process.env.SMTP_PORT || 465),
   SMTP_USER: process.env.SMTP_USER,

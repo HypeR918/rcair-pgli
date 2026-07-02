@@ -7,6 +7,9 @@ function sanitizeForStorage(session) {
 
   const copy = { ...session };
 
+  // не сохраняем открытый код, только его хэш
+  delete copy.verificationCode;
+
   if (copy.ticketDraft) {
     copy.ticketDraft = { ...copy.ticketDraft };
     delete copy.ticketDraft.files;
