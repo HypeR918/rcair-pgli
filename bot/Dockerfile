@@ -8,7 +8,7 @@ ENV TZ=Asia/Tomsk
 # Установка корневых сертификатов НУЦ Минцифры России.
 # Необходима для корректной работы с platform-api2.max.ru.
 # Если скачивание по HTTPS не проходит, скачайте сертификаты вручную
-# и замените RUN на COPY certs/*.crt /usr/local/share/ca-certificates/
+# и замените RUN с curl на COPY certs/*.crt /usr/local/share/ca-certificates/
 RUN apt-get update \
     && apt-get install -y --no-install-recommends ca-certificates curl \
     && curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_root_ca_pem.crt \
@@ -16,7 +16,12 @@ RUN apt-get update \
     && curl -fsSL -o /usr/local/share/ca-certificates/russian_trusted_sub_ca_pem.crt \
        https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt \
     && update-ca-certificates \
+    && mkdir -p /app/certs \
+    && cat /usr/local/share/ca-certificates/russian_trusted_*.crt > /app/certs/russian-ca-bundle.crt \
     && rm -rf /var/lib/apt/lists/*
+
+# Явно указываем Node.js использовать установленные сертификаты
+ENV NODE_EXTRA_CA_CERTS=/app/certs/russian-ca-bundle.crt
 
 COPY package*.json ./
 
