@@ -17,7 +17,7 @@ RUN apt-get update \
        https://gu-st.ru/content/lending/russian_trusted_sub_ca_pem.crt \
     && update-ca-certificates \
     && mkdir -p /app/certs \
-    && cat /usr/local/share/ca-certificates/russian_trusted_*.crt > /app/certs/russian-ca-bundle.crt \
+    && for f in /usr/local/share/ca-certificates/russian_trusted_*.crt; do sed 's/\r$//' "$f"; echo; done > /app/certs/russian-ca-bundle.crt \
     && rm -rf /var/lib/apt/lists/*
 
 # Явно указываем Node.js использовать установленные сертификаты
