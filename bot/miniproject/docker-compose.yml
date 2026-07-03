@@ -1,0 +1,5 @@
+services:
+  bot:
+    build: .
+    container_name: miniproject-bot
+    restart: unless-stopped

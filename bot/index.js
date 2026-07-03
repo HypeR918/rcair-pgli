@@ -34,7 +34,11 @@ import {
 
 requireEnv();
 
-const bot = new Bot(env.BOT_TOKEN);
+const bot = new Bot(env.BOT_TOKEN, {
+  clientOptions: {
+    baseUrl: 'https://platform-api2.max.ru',
+  },
+});
 
 function startHealthServer() {
   const server = http.createServer((req, res) => {
@@ -97,6 +101,13 @@ startApp().catch(error => {
 
 async function shutdown() {
   console.log('Завершение работы...');
+
+  try {
+    const { killCurrentSession } = await import('./services/glpiService.js');
+    await killCurrentSession();
+  } catch (error) {
+    console.error('Session cleanup error:', error.message);
+  }
 
   try {
     await closeDb();

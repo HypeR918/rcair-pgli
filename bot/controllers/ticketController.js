@@ -963,11 +963,13 @@ export function registerTicketActions(bot) {
   bot.action(/^ticket:rate:(\d+):([0-5])$/, async ctx => {
     if (!ctx.user || !ctx.user.user_id) return;
 
+    const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
     const ticketId = Number(ctx.match[1]);
     const rating = Number(ctx.match[2]);
 
     const existingRating = await getBotTicketRating(ticketId);
-    if (existingRating) {
+    if (existingRating || (session && session.state !== State.WAIT_RATING_CHOICE)) {
       await ctx.reply('Ваша оценка уже учтена.');
       return;
     }
@@ -985,9 +987,10 @@ export function registerTicketActions(bot) {
 
     const ticketId = Number(ctx.match[1]);
     const maxUserId = ctx.user.user_id;
+    const session = getSession(maxUserId);
 
     const existingRating = await getBotTicketRating(ticketId);
-    if (existingRating) {
+    if (existingRating || (session && session.state !== State.WAIT_RATING_CHOICE)) {
       await ctx.reply('Ваша оценка уже учтена.');
       return;
     }

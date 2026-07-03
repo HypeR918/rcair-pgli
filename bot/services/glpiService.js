@@ -274,6 +274,13 @@ function invalidateSession() {
   sessionExpiresAt = 0;
 }
 
+export async function killCurrentSession() {
+  if (cachedSessionToken) {
+    await glpiKillSession(cachedSessionToken);
+    invalidateSession();
+  }
+}
+
 export async function glpiApiRequest(method, path, data = null) {
   let sessionToken = await getGlpiSession();
 
