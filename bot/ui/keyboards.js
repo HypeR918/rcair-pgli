@@ -4,7 +4,7 @@ import { env } from '../config/env.js';
 
 export function startKeyboard() {
   return Keyboard.inlineKeyboard([
-    [Keyboard.button.callback('Для начала работы нужно авторизоваться', 'menu:start_auth')],
+    [Keyboard.button.callback('Авторизоваться', 'menu:start_auth')],
   ]);
 }
 
