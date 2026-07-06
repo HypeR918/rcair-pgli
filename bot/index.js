@@ -40,6 +40,11 @@ const bot = new Bot(env.BOT_TOKEN, {
   },
 });
 
+bot.catch(error => {
+  console.error('Bot error:', error);
+  process.exit(1);
+});
+
 function startHealthServer() {
   const server = http.createServer((req, res) => {
     if (req.method === 'GET' && req.url === '/health') {
@@ -81,7 +86,10 @@ async function startApp() {
   registerMessageHandler(bot);
   registerTicketActions(bot);
 
-  bot.start();
+  bot.start().catch(error => {
+    console.error('Bot polling fatal error:', error);
+    process.exit(1);
+  });
 
   startSdsPolling(bot, env.GLPI_APPROVAL_POLL_MS);
   startTicketPolling(bot, env.GLPI_TICKET_POLL_MS);
@@ -123,8 +131,10 @@ process.on('SIGTERM', shutdown);
 
 process.on('uncaughtException', error => {
   console.error('UncaughtException:', error);
+  process.exit(1);
 });
 
 process.on('unhandledRejection', reason => {
   console.error('UnhandledRejection:', reason);
+  process.exit(1);
 });
