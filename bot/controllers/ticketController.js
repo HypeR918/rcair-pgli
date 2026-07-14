@@ -438,21 +438,27 @@ export async function rateTicket(ctx, ticketId, rating, comment = null) {
   const localTicket = await getBotUserTicket(maxUserId, ticketId);
 
   if (!localTicket) {
-    await ctx.reply('Эта заявка не найдена среди ваших активных заявок.');
+    await ctx.reply('Эта заявка не найдена среди ваших активных заявок.', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
     return;
   }
 
   const existingRating = await getBotTicketRating(ticketId);
 
   if (existingRating) {
-    await ctx.reply('Ваша оценка уже учтена.');
+    await ctx.reply('Ваша оценка уже учтена.', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
     return;
   }
 
   const saved = await saveBotTicketRating(maxUserId, ticketId, normalizedRating, comment);
 
   if (!saved) {
-    await ctx.reply('Ваша оценка уже учтена.');
+    await ctx.reply('Ваша оценка уже учтена.', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
     return;
   }
 
@@ -976,7 +982,9 @@ export function registerTicketActions(bot) {
 
     const existingRating = await getBotTicketRating(ticketId);
     if (existingRating || (session && session.state !== State.WAIT_RATING_CHOICE)) {
-      await ctx.reply('Ваша оценка уже учтена.');
+      await ctx.reply('Ваша оценка уже учтена.', {
+        attachments: [mainMenuKeyboard(maxUserId)],
+      });
       return;
     }
 
@@ -997,7 +1005,9 @@ export function registerTicketActions(bot) {
 
     const existingRating = await getBotTicketRating(ticketId);
     if (existingRating || (session && session.state !== State.WAIT_RATING_CHOICE)) {
-      await ctx.reply('Ваша оценка уже учтена.');
+      await ctx.reply('Ваша оценка уже учтена.', {
+        attachments: [mainMenuKeyboard(maxUserId)],
+      });
       return;
     }
 
