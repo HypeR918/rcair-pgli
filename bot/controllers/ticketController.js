@@ -459,9 +459,13 @@ export async function rateTicket(ctx, ticketId, rating, comment = null) {
   setSession(maxUserId, { state: State.IDLE });
 
   if (normalizedRating === 1) {
-    await ctx.reply('Ваша оценка учтена. Спасибо :)');
+    await ctx.reply('Ваша оценка учтена. Спасибо :)', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
   } else {
-    await ctx.reply('Ваша оценка учтена');
+    await ctx.reply('Ваша оценка учтена', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
   }
 }
 
@@ -639,7 +643,9 @@ export async function handleTicketTextState(ctx, session, text) {
     await addGlpiTicketFollowup(session.ticketId, content);
 
     setSession(maxUserId, { state: State.IDLE });
-    await ctx.reply('Ваша оценка учтена');
+    await ctx.reply('Ваша оценка учтена', {
+      attachments: [mainMenuKeyboard(maxUserId)],
+    });
     return true;
   }
 

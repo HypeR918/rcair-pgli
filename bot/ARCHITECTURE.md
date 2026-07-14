@@ -1,0 +1,500 @@
+
+## 2. Общая схема взаимодействия
+
+flowchart TB
+    U[Пользователь MAX]
+    MAX[MAX API<br/>platform-api2.max.ru]
+
+    subgraph "Сервер бота"
+        BOT[Node.js бот index.js]
+        BOT_DB[(База бота<br/>MariaDB контейнер)]
+        UPLOADS[/tmp/uploads/]
+        HS[Health /health:3000]
+    end
+
+    subgraph "Сервер GLPI"
+        GLPI_API[GLPI REST API]
+        GLPI_DB[(GLPI MySQL)]
+    end
+
+    SMTP[SMTP сервер]
+    IMPORTER[glpi-importer.js<br/>порт 3100]
+
+    U <-->|сообщения, кнопки, файлы| MAX
+    MAX <-->|long polling /updates| BOT
+    BOT <-->|SQL 127.0.0.1:3307| BOT_DB
+    BOT <-->|HTTP API + polling 5s/60s| GLPI_API
+    BOT -->|POST /internal/import-ldap-user| IMPORTER
+    IMPORTER -->|docker exec| GLPI_DB
+    BOT -->|коды верификации| SMTP
+    BOT --> HS
+    BOT --> UPLOADS
+
+
+---
+
+## 3. Авторизация пользователя
+
+sequenceDiagram
+    actor U as Пользователь
+    participant Bot as MAX-бот
+    participant State as sessionStore.js
+    participant BotDB as База бота
+    participant GLPI as GLPI API
+    participant Email as SMTP
+
+    U->>Bot: /start или bot_started
+    Bot->>BotDB: SELECT blocked_max_ids / bot_users
+    alt MAX ID заблокирован
+        Bot->>State: state = WAIT_UNLOCK_EMAIL
+        Bot->>U: «Введите email для разблокировки»
+    else Пользователь найден в GLPI
+        Bot->>GLPI: GET /User/{id}
+        Bot->>U: «Добро пожаловать!» + главное меню
+    else Новый пользователь
+        Bot->>State: state = WAIT_NEW_USER_EMAIL
+        Bot->>U: приветствие + кнопка «Авторизоваться»
+    end
+
+    U->>Bot: нажать «Авторизоваться»
+    Bot->>State: state = WAIT_NEW_USER_EMAIL
+    Bot->>U: «Введите корпоративный email»
+
+    U->>Bot: ввод email
+    Bot->>Bot: валидация формата email
+    alt EMAIL_VERIFICATION_ENABLED=true
+        Bot->>Bot: crypto.randomInt(100000, 999999)
+        Bot->>Bot: HMAC-SHA256(code, EMAIL_CODE_SECRET)
+        Bot->>Email: отправка письма
+        Bot->>State: state=WAIT_EMAIL_VERIFICATION_CODE, hash, TTL=10 мин
+        Bot->>U: «Код отправлен на почту»
+
+        U->>Bot: ввод кода
+        Bot->>Bot: verifyCodeHash(code, hash)
+        alt код неверный N раз
+            Bot->>BotDB: blockMaxId()
+            Bot->>U: «MAX ID заблокирован»
+        else код верный
+            Bot->>Bot: proceedAfterVerification(email)
+        end
+    else верификация отключена
+        Bot->>Bot: proceedAfterVerification(email)
+    end
+
+    Bot->>Bot: importUserFromSdsViaGlpi(email)
+    Bot->>IMPORTER: POST /internal/import-ldap-user
+    IMPORTER-->>Bot: результат импорта
+
+    alt пользователь найден
+        Bot->>BotDB: linkMaxIdToGlpiUser()
+        Bot->>GLPI: PUT /User/{id} (max_id, is_active=1)
+        Bot->>U: «Учетная запись активирована» + меню
+    else пользователь не найден
+        Bot->>State: state = WAIT_SDS_ORG
+        Bot->>U: «Введите организацию» (начало SDS)
+    end
+
+
+---
+
+## 4. Главное меню
+
+sequenceDiagram
+    actor U as Пользователь
+    participant Bot as MAX-бот
+    participant State as sessionStore.js
+    participant BotDB as База бота
+
+    U->>Bot: нажать «Новая» (menu:new)
+    Bot->>BotDB: findGlpiUserByMaxId(max_id)
+    Bot->>State: state = WAIT_NEW_TICKET_TITLE
+    Bot->>U: «Обозначьте тему заявки»
+
+    U->>Bot: нажать «Выбрать» (menu:list)
+    Bot->>BotDB: getBotUserTickets(max_id, 20)
+    Bot->>GLPI: GET /Ticket/{id} для каждой
+    Bot->>U: список заявок + кнопки
+
+    U->>Bot: нажать «Справка» (menu:help)
+    Bot->>U: текст инструкции + «В меню»
+
+    U->>Bot: нажать «Выйти» (menu:logout)
+    Bot->>State: deleteSession(max_id)
+    Bot->>U: «Сессия завершена»
+
+
+---
+
+## 5. Создание заявки
+
+sequenceDiagram
+    actor U as Пользователь
+    participant Bot as MAX-бот
+    participant State as sessionStore.js
+    participant Uploads as tmp/uploads
+    participant GLPI as GLPI API
+    participant BotDB as База бота
+
+    U->>Bot: «Новая»
+    Bot->>State: state = WAIT_NEW_TICKET_TITLE
+    Bot->>U: «Обозначьте тему заявки»
+
+    U->>Bot: текст темы
+    Bot->>State: ticketDraft.title = text
+    Bot->>State: state = WAIT_NEW_TICKET_DESCRIPTION
+    Bot->>U: «Подробно опишите запрос»
+
+    U->>Bot: текст описания
+    Bot->>State: ticketDraft.description = text
+    Bot->>State: state = WAIT_NEW_TICKET_FILES
+    Bot->>U: «Прикрепить файлы / Создать без файлов»
+
+    alt Прикрепить файлы
+        U->>Bot: отправить файл
+        Bot->>MAX_API: скачать файл по URL
+        Bot->>Uploads: сохранить tmp/uploads/{timestamp}-{random}-{name}
+        Bot->>State: ticketDraft.files.push(file)
+        Bot->>U: «Файл добавлен. Всего вложений: N»
+        U->>Bot: «Создать (N файлов)»
+    else Без файлов
+        U->>Bot: «Создать без файлов»
+    end
+
+    Bot->>State: state = WAIT_TICKET_CONFIRM
+    Bot->>U: «Проверьте данные заявки» + кнопка «Отправить заявку»
+
+    U->>Bot: «Отправить заявку»
+    Bot->>BotDB: findGlpiUserByMaxId(max_id)
+    Bot->>GLPI: POST /Ticket?session_write=true
+    Note over Bot,GLPI: name, content, entities_id, type, urgency, impact, priority, _users_id_requester
+    GLPI-->>Bot: { id: glpi_ticket_id }
+
+    alt есть файлы
+        loop по каждому файлу
+            Bot->>GLPI: POST /Document?session_write=true
+            Note over Bot,GLPI: multipart: uploadManifest + бинарный файл
+            GLPI-->>Bot: document_id
+            Bot->>GLPI: POST /Document_Item?session_write=true
+            Note over Bot,GLPI: documents_id, itemtype='Ticket', items_id=ticketId
+        end
+    end
+
+    Bot->>BotDB: INSERT INTO bot_user_tickets (max_id, glpi_ticket_id)
+    Bot->>Uploads: удалить временные файлы
+    Bot->>State: state = IDLE
+    Bot->>U: «Заявка №{id} создана» + главное меню
+
+
+
+
+---
+
+## 6. Добавление комментария
+
+    sequenceDiagram
+        actor U as Пользователь
+        participant Bot as MAX-бот
+        participant State as sessionStore.js
+        participant Uploads as tmp/uploads
+        participant GLPI as GLPI API
+        participant BotDB as База бота
+
+        U->>Bot: «Добавить комментарий» (ticket:comment:{id})
+        Bot->>BotDB: ensureGlpiTicketExistsForUser(ticketId, max_id)
+        Bot->>State: state = WAIT_TICKET_COMMENT, ticketId = {id}
+        Bot->>U: «Введите комментарий или приложите файл»
+
+        U->>Bot: текст + файлы
+        Bot->>MAX_API: скачать файлы
+        Bot->>Uploads: сохранить во временную папку
+
+        Bot->>GLPI: POST /ITILFollowup?session_write=true
+        Note over Bot,GLPI: itemtype='Ticket', items_id=ticketId, content, is_private=0
+        GLPI-->>Bot: { id: followup_id }
+
+        alt есть файлы
+            loop по файлам
+                Bot->>GLPI: POST /Document + POST /Document_Item
+            end
+        end
+
+        Bot->>BotDB: INSERT INTO bot_ticket_followups
+        Note over Bot,BotDB: glpi_ticket_id, glpi_followup_id, content_hash, sent_to_max=1
+        Bot->>Uploads: удалить временные файлы
+        Bot->>State: state = IDLE
+        Bot->>U: «Комментарий добавлен» + детали заявки
+
+
+---
+
+## 7. Принятие / отклонение решения
+
+sequenceDiagram
+    actor U as Пользователь
+    participant Bot as MAX-бот
+    participant State as sessionStore.js
+    participant BotDB as База бота
+    participant GLPI as GLPI API
+
+    U->>Bot: «Да, закрыть заявку» (ticket:accept:{id})
+    Bot->>BotDB: ensureGlpiTicketExistsForUser(ticketId, max_id)
+    Bot->>GLPI: POST /ITILFollowup
+    Note over Bot,GLPI: content='Пользователь принял решение через MAX'
+    Bot->>GLPI: PUT /Ticket/{id}?session_write=true
+    Note over Bot,GLPI: status = 6 (CLOSED)
+    Bot->>BotDB: markTicketSolutionNotified(ticketId)
+    Bot->>BotDB: markTicketClosedNotified(ticketId)
+    Bot->>State: state = WAIT_RATING_CHOICE, ticketId = {id}
+    Bot->>U: «Вы остались довольны качеством?» Да / Нет
+
+    alt Да
+        U->>Bot: ticket:rate:{id}:1
+        Bot->>BotDB: INSERT INTO bot_ticket_ratings (max_id, glpi_ticket_id, rating)
+        Bot->>State: state = IDLE
+        Bot->>U: «Спасибо :)»
+    else Нет
+        U->>Bot: ticket:rate_negative:{id}
+        Bot->>State: state = WAIT_NEGATIVE_RATING_REASON
+        Bot->>U: «Расскажите, что было не так»
+        U->>Bot: текст причины
+        Bot->>BotDB: INSERT INTO bot_ticket_ratings (max_id, glpi_ticket_id, rating, comment)
+        Bot->>GLPI: POST /ITILFollowup
+        Note over Bot,GLPI: content='Пользователь оставил негативный отзыв: {text}'
+        Bot->>State: state = IDLE
+        Bot->>U: «Ваша оценка учтена»
+    end
+
+    U->>Bot: «Нет, вернуть в работу» (ticket:reject:{id})
+    Bot->>State: state = WAIT_REJECT_SOLUTION_REASON
+    Bot->>U: «Расскажите, почему отклоняете решение»
+    U->>Bot: причина
+    Bot->>GLPI: POST /ITILFollowup
+    Note over Bot,GLPI: content='Пользователь отклонил решение. Причина: {reason}'
+    Bot->>GLPI: PUT /Ticket/{id}?session_write=true
+    Note over Bot,GLPI: status = 2 (PROCESSING)
+    Bot->>BotDB: resetTicketSolutionNotified(ticketId)
+    Bot->>State: state = IDLE
+    Bot->>U: «Заявка возвращена в работу»
+
+---
+
+## 8. SDS-регистрация нового пользователя
+
+sequenceDiagram
+    actor U as Пользователь
+    participant Bot as MAX-бот
+    participant State as sessionStore.js
+    participant BotDB as База бота
+    participant GLPI as GLPI API
+    participant Importer as glpi-importer.js
+
+    Note over Bot,U: Запускается, если после верификации email пользователь не найден в GLPI
+
+    Bot->>State: state = WAIT_SDS_ORG
+    Bot->>U: «Введите название организации»
+    U->>Bot: организация
+    Bot->>State: sdsData.org
+    Bot->>U: «Введите подразделение»
+    U->>Bot: подразделение
+    Bot->>State: sdsData.dept
+    Bot->>U: «Введите ФИО»
+    U->>Bot: ФИО
+    Bot->>State: sdsData.fio
+    Bot->>U: «Введите должность»
+    U->>Bot: должность
+    Bot->>State: sdsData.position
+    Bot->>U: «Введите телефон»
+    U->>Bot: телефон
+    Bot->>State: sdsData.phone
+    Bot->>U: «Опишите содержание обращения»
+    U->>Bot: обращение
+    Bot->>State: sdsData.issue
+
+    Bot->>BotDB: INSERT INTO sds_requests (max_id, email, org, ..., status='PENDING')
+    Bot->>GLPI: POST /Ticket?session_write=true
+    Note over Bot,GLPI: name='Регистрация пользователя: {fio}', content=сформированный текст
+    GLPI-->>Bot: glpi_ticket_id
+    Bot->>BotDB: UPDATE sds_requests SET glpi_ticket_id = ?
+    Bot->>State: state = WAIT_SDS_APPROVAL
+    Bot->>U: «Заявка создана и передана администраторам»
+
+    loop polling каждые 60 сек
+        Bot->>BotDB: SELECT * FROM sds_requests WHERE status='PENDING'
+        Bot->>GLPI: GET /Ticket/{id}
+        Bot->>GLPI: GET /Ticket/{id}/ITILSolution
+        Bot->>GLPI: GET /Ticket/{id}/ITILFollowup
+        Bot->>Bot: parseDecisionText(text)
+
+        alt Решение: APPROVED
+            Bot->>BotDB: UPDATE sds_requests SET status='APPROVED'
+            Bot->>Importer: POST /internal/import-ldap-user {email}
+            Importer->>GLPI_DB: docker exec glpi:ldap:synchronize_users
+            Importer-->>Bot: результат
+            Bot->>BotDB: linkMaxIdToGlpiUser()
+            Bot->>U: «Учетная запись активирована» + меню
+        else Решение: REJECTED
+            Bot->>BotDB: UPDATE sds_requests SET status='REJECTED'
+            Bot->>State: deleteSession(max_id)
+            Bot->>U: «По заявке получен отказ»
+        end
+    end
+
+
+## 9. Фоновый polling заявок
+
+sequenceDiagram
+    participant Timer as setInterval 5s
+    participant Poll as ticketPolling.js
+    participant BotDB as База бота
+    participant GLPI as GLPI API
+    participant Bot as MAX-бот
+    participant U as Пользователь
+
+    Timer->>Poll: каждые 5 секунд
+    Poll->>BotDB: SELECT * FROM bot_user_tickets LIMIT 50
+    BotDB-->>Poll: список тикетов
+
+    loop по каждому тикету
+        Poll->>GLPI: GET /Ticket/{id}
+        GLPI-->>Poll: {status, name, content, ...}
+
+        alt status = 5 (SOLVED) и solution_notified = 0
+            Poll->>GLPI: GET /Ticket/{id}/ITILSolution
+            GLPI-->>Poll: массив решений
+            Poll->>Bot: sendMessageToMaxUser(max_id, "Предложено решение...")
+            Bot->>U: уведомление + кнопки
+            Poll->>BotDB: UPDATE bot_user_tickets SET solution_notified = 1
+        else status = 6 (CLOSED) и closed_notified = 0
+            Poll->>Bot: sendMessageToMaxUser(max_id, "Заявка закрыта")
+            Bot->>U: уведомление
+            Poll->>BotDB: UPDATE bot_user_tickets SET closed_notified = 1
+        else
+            Poll->>GLPI: GET /Ticket/{id}/ITILFollowup
+            GLPI-->>Poll: массив комментариев
+            loop по новым публичным комментариям
+                Poll->>BotDB: isFollowupKnown(ticketId, followupId)
+                BotDB-->>Poll: false
+                Poll->>Bot: sendMessageToMaxUser(max_id, "Новый комментарий...")
+                Bot->>U: уведомление
+                Poll->>BotDB: markFollowupAsKnown(...)
+            end
+        end
+    end
+
+
+## 10. Фоновый polling SDS-заявок
+
+sequenceDiagram
+    participant Timer as setInterval 60s
+    participant Poll as sdsPolling.js
+    participant BotDB as База бота
+    participant GLPI as GLPI API
+    participant Bot as MAX-бот
+    participant U as Пользователь
+
+    Timer->>Poll: каждые 60 секунд
+    Poll->>BotDB: SELECT * FROM sds_requests WHERE status='PENDING' AND glpi_ticket_id IS NOT NULL
+    BotDB-->>Poll: список заявок
+
+    loop по каждой заявке
+        Poll->>GLPI: GET /Ticket/{id}
+        GLPI-->>Poll: тикет
+        Poll->>GLPI: GET /Ticket/{id}/ITILSolution
+        GLPI-->>Poll: решения
+        Poll->>GLPI: GET /Ticket/{id}/ITILFollowup
+        GLPI-->>Poll: комментарии
+        Poll->>Bot: parseDecisionText()
+
+        alt APPROVED
+            Poll->>BotDB: UPDATE sds_requests SET status='APPROVED'
+            Poll->>Bot: handleApprovedSdsRequest
+            Bot->>U: «Заявка подтверждена»
+        else REJECTED
+            Poll->>BotDB: UPDATE sds_requests SET status='REJECTED'
+            Poll->>Bot: handleRejectedSdsRequest
+            Bot->>U: «По заявке получен отказ»
+        end
+    end
+
+
+---
+
+## 12. Схема базы данных бота
+
+erDiagram
+    bot_users {
+        INT id PK
+        BIGINT max_id UK
+        VARCHAR email
+        INT glpi_user_id
+        TINYINT is_blocked
+        DATETIME created_at
+        DATETIME updated_at
+    }
+
+    blocked_max_ids {
+        BIGINT max_id PK
+        DATETIME blocked_at
+    }
+
+    sds_requests {
+        INT id PK
+        BIGINT max_id
+        VARCHAR email
+        VARCHAR org
+        VARCHAR dept
+        VARCHAR fio
+        VARCHAR position
+        VARCHAR phone
+        TEXT issue
+        INT glpi_ticket_id
+        INT glpi_ticket_status
+        VARCHAR status
+        TEXT decision_text
+        DATETIME created_at
+        DATETIME decided_at
+    }
+
+    bot_user_tickets {
+        INT id PK
+        BIGINT max_id
+        INT glpi_ticket_id UK
+        TINYINT solution_notified
+        TINYINT closed_notified
+        DATETIME created_at
+        DATETIME updated_at
+    }
+
+    bot_ticket_followups {
+        INT id PK
+        INT glpi_ticket_id
+        INT glpi_followup_id
+        CHAR content_hash
+        TINYINT sent_to_max
+        DATETIME created_at
+    }
+
+    bot_ticket_ratings {
+        INT id PK
+        BIGINT max_id
+        INT glpi_ticket_id UK
+        TINYINT rating
+        TEXT comment
+        DATETIME created_at
+    }
+
+    bot_sessions {
+        BIGINT max_id PK
+        JSON session_data
+        DATETIME updated_at
+    }
+
+    bot_users ||--o{ bot_user_tickets : "создаёт заявки"
+    bot_users ||--o{ bot_ticket_ratings : "оценивает"
+    bot_users ||--o| blocked_max_ids : "может быть заблокирован"
+    bot_users ||--o| bot_sessions : "имеет сессию"
+    bot_users ||--o{ sds_requests : "создаёт SDS"
+    bot_user_tickets ||--o{ bot_ticket_followups : "имеет комментарии"
+
+
+---

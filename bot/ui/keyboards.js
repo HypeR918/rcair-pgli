@@ -67,6 +67,7 @@ export function ticketRateChoiceKeyboard(ticketId) {
   return Keyboard.inlineKeyboard([
     [Keyboard.button.callback('Да', `ticket:rate:${ticketId}:1`)],
     [Keyboard.button.callback('Нет', `ticket:rate_negative:${ticketId}`)],
+    [Keyboard.button.callback('В меню', 'menu:back')],
   ]);
 }
 
