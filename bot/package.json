@@ -13,7 +13,7 @@
   "license": "ISC",
   "type": "module",
   "dependencies": {
-    "@maxhub/max-bot-api": "^0.2.2",
+    "@maxhub/max-bot-api": "0.2.5",
     "axios": "^1.16.1",
     "axios-cookiejar-support": "^7.0.0",
     "dotenv": "^17.4.2",

@@ -2,7 +2,10 @@ import crypto from 'node:crypto';
 import { approveWords, rejectWords } from './constants.js';
 
 export function normalizeEmail(value) {
-  return String(value || '').trim().toLowerCase();
+  return String(value || '')
+    .trim()
+    .replace(/^mailto:/i, '')
+    .toLowerCase();
 }
 
 export function sleep(ms) {
@@ -78,7 +81,10 @@ export function parseDecisionText(text) {
   }
 
   if (hasApprove && hasReject) {
-    console.log('Decision text contains both approve and reject words:', normalized);
+    console.log(
+      'Decision text contains both approve and reject words:',
+      normalized
+    );
     return null;
   }
 
