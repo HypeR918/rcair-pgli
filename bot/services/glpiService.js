@@ -223,6 +223,7 @@ function isDuplicateRequesterError(error) {
 
 let cachedSessionToken = null;
 let sessionExpiresAt = 0;
+let cachedApiUserId = 0;
 
 async function getGlpiSession() {
   if (cachedSessionToken && Date.now() < sessionExpiresAt) {
@@ -407,6 +408,40 @@ export async function glpiMultipartRequest(method, path, form) {
     }
     throw err;
   }
+}
+
+export async function getCurrentGlpiApiUserId() {
+  if (cachedApiUserId > 0) {
+    return cachedApiUserId;
+  }
+
+  try {
+    const result = await glpiApiRequest('get', '/getFullSession');
+    const session = result?.session || result || {};
+
+    const userId = Number(
+      session.glpiID ||
+      session.glpi_id ||
+      session.users_id ||
+      session.user_id ||
+      0
+    );
+
+    if (userId > 0) {
+      cachedApiUserId = userId;
+
+      console.log('=== GLPI API USER DETECTED ===');
+      console.log('userId:', userId);
+
+      return userId;
+    }
+
+    console.warn('GLPI API user ID was not found in getFullSession response');
+  } catch (error) {
+    console.warn('getCurrentGlpiApiUserId warning:', error.message);
+  }
+
+  return 0;
 }
 
 async function getGlpiUserEntityIdFromUser(glpiUserId) {
@@ -781,7 +816,11 @@ export async function setGlpiTicketRequester(ticketId, glpiUserId) {
   });
 }
 
-export async function addGlpiTicketRequester(ticketId, glpiUserId) {
+export async function addGlpiTicketRequester(
+  ticketId,
+  glpiUserId,
+  useNotification = true
+) {
   const requesterId = Number(glpiUserId || 0);
 
   if (!requesterId) {
@@ -793,7 +832,7 @@ export async function addGlpiTicketRequester(ticketId, glpiUserId) {
       tickets_id: Number(ticketId),
       users_id: requesterId,
       type: 1,
-      use_notification: 1,
+      use_notification: useNotification ? 1 : 0,
     },
   });
 }
@@ -849,6 +888,56 @@ export async function ensureGlpiTicketRequester(ticketId, glpiUserId) {
   }
 
   console.log('=== GLPI REQUESTER SET BY TICKET_USER ===');
+  console.log('ticketId:', ticketId);
+  console.log('requesterId:', requesterId);
+}
+
+export async function ensureAdditionalGlpiTicketRequester(
+  ticketId,
+  glpiUserId,
+  useNotification = false
+) {
+  const requesterId = Number(glpiUserId || 0);
+
+  if (!requesterId) {
+    return;
+  }
+
+  const alreadyExists = await hasGlpiTicketRequester(ticketId, requesterId);
+
+  if (alreadyExists) {
+    console.log('=== GLPI ADDITIONAL REQUESTER ALREADY EXISTS ===');
+    console.log('ticketId:', ticketId);
+    console.log('requesterId:', requesterId);
+    return;
+  }
+
+  try {
+    await addGlpiTicketRequester(
+      ticketId,
+      requesterId,
+      useNotification
+    );
+  } catch (error) {
+    if (isDuplicateRequesterError(error)) {
+      console.log('=== GLPI ADDITIONAL REQUESTER DUPLICATE IGNORED ===');
+      console.log('ticketId:', ticketId);
+      console.log('requesterId:', requesterId);
+      return;
+    }
+
+    throw error;
+  }
+
+  const added = await hasGlpiTicketRequester(ticketId, requesterId);
+
+  if (!added) {
+    throw new Error(
+      `GLPI additional requester was not attached to ticket ${ticketId}`
+    );
+  }
+
+  console.log('=== GLPI ADDITIONAL REQUESTER ADDED ===');
   console.log('ticketId:', ticketId);
   console.log('requesterId:', requesterId);
 }
@@ -1120,6 +1209,16 @@ export async function createGlpiUserTicket(
 
   await ensureGlpiTicketEntity(ticketId, requesterEntityId);
   await ensureGlpiTicketRequester(ticketId, glpiUserId);
+
+  const botRequesterId = await getCurrentGlpiApiUserId();
+
+  if (botRequesterId > 0 && botRequesterId !== Number(glpiUserId)) {
+    await ensureAdditionalGlpiTicketRequester(
+      ticketId,
+      botRequesterId,
+      false
+    );
+  }
 
   return {
     ticketId,
