@@ -922,14 +922,26 @@ export async function createGlpiTicket(title, content, options = {}) {
   return ticketId;
 }
 
-export async function addGlpiTicketFollowup(ticketId, content) {
+export async function addGlpiTicketFollowup(
+  ticketId,
+  content,
+  authorUserId = null
+) {
+  const input = {
+    itemtype: 'Ticket',
+    items_id: ticketId,
+    content,
+    is_private: 0,
+  };
+
+  const normalizedAuthorUserId = Number(authorUserId || 0);
+
+  if (normalizedAuthorUserId > 0) {
+    input.users_id = normalizedAuthorUserId;
+  }
+
   const result = await glpiApiRequest('post', '/ITILFollowup', {
-    input: {
-      itemtype: 'Ticket',
-      items_id: ticketId,
-      content,
-      is_private: 0,
-    },
+    input,
   });
 
   return result?.id || null;

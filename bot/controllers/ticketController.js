@@ -326,14 +326,23 @@ export async function addUserCommentToTicket(ctx, ticketId, commentText, files =
 
   const { localTicket, glpiTicket } = checked;
   const ticketTitle = stripHtml(glpiTicket.name || '');
+  const user = await findGlpiUserByMaxId(maxUserId);
 
-  const content = [
-    'Комментарий пользователя из MAX:',
-    '',
-    commentText || 'Добавлены вложения.',
-  ].join('\n');
+  if (!user?.id) {
+    await cleanupDownloadedFiles(files);
+    await ctx.reply(
+      'Не удалось определить учетную запись пользователя в GLPI. Попробуйте позже.'
+    );
+    return;
+  }
 
-  const followupId = await addGlpiTicketFollowup(ticketId, content);
+  const content = commentText || 'Добавлены вложения.';
+
+  const followupId = await addGlpiTicketFollowup(
+    ticketId,
+    content,
+    user.id
+  );
 
   if (followupId) {
     await markFollowupAsKnown(ticketId, followupId, content, true);
