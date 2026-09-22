@@ -23,6 +23,35 @@ import {
   showWelcomeAndMenu,
 } from './userController.js';
 
+async function submitSdsRequest(ctx, session) {
+  const maxUserId = ctx.user.user_id;
+
+  session.sdsData.issue = null;
+
+  const localRequestId = await createSdsRequest(
+    maxUserId,
+    session.verifiedEmail,
+    session.sdsData
+  );
+
+  const glpiTicketId = await createGlpiRegistrationTicket(
+    maxUserId,
+    session.verifiedEmail,
+    session.sdsData
+  );
+
+  await updateSdsRequestGlpiTicketId(localRequestId, glpiTicketId);
+
+  session.state = State.WAIT_SDS_APPROVAL;
+  session.sdsRequestId = localRequestId;
+  session.glpiTicketId = glpiTicketId;
+  setSession(maxUserId, session);
+
+  await ctx.reply(
+    'Данные переданы администраторам. Я пришлю уведомление, когда будет вынесено решение.'
+  );
+}
+
 export async function handleSdsTextState(ctx, session, text) {
   const maxUserId = ctx.user.user_id;
 
@@ -64,39 +93,14 @@ export async function handleSdsTextState(ctx, session, text) {
 
   if (session.state === State.WAIT_SDS_PHONE) {
     session.sdsData.phone = text;
-    session.state = State.WAIT_SDS_ISSUE;
-    setSession(maxUserId, session);
-
-    await ctx.reply('Опишите содержание обращения:');
+    await submitSdsRequest(ctx, session);
     return true;
   }
 
+  // Совместимость с сессиями, которые были сохранены до удаления шага
+  // «Опишите содержание обращения».
   if (session.state === State.WAIT_SDS_ISSUE) {
-    session.sdsData.issue = text;
-
-    await ctx.reply('Создаю заявку для администраторов...');
-
-    const localRequestId = await createSdsRequest(
-      maxUserId,
-      session.verifiedEmail,
-      session.sdsData
-    );
-
-    const glpiTicketId = await createGlpiRegistrationTicket(
-      maxUserId,
-      session.verifiedEmail,
-      session.sdsData
-    );
-
-    await updateSdsRequestGlpiTicketId(localRequestId, glpiTicketId);
-
-    session.state = State.WAIT_SDS_APPROVAL;
-    session.sdsRequestId = localRequestId;
-    session.glpiTicketId = glpiTicketId;
-    setSession(maxUserId, session);
-
-    await ctx.reply(`Заявка №${glpiTicketId} создана и передана администраторам.`);
-    await ctx.reply('Ожидайте решения по заявке. Я пришлю уведомление после обработки.');
+    await submitSdsRequest(ctx, session);
     return true;
   }
 
