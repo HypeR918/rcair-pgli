@@ -509,13 +509,12 @@ export async function linkMaxIdToGlpiUser(glpiUserId, maxUserId, email = null) {
 export async function createSdsRequest(maxUserId, email, data) {
   const [result] = await botPool.execute(
     `INSERT INTO sds_requests
-      (max_id, email, org, dept, fio, position, phone, issue, status)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
+      (max_id, email, org, fio, position, phone, issue, status)
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'PENDING')`,
     [
       maxUserId,
       email,
       data.org,
-      data.dept,
       data.fio,
       data.position,
       data.phone,

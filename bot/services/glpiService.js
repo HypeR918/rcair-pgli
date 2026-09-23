@@ -1150,7 +1150,6 @@ export function buildRegistrationTicketContent(maxUserId, email, data) {
     `MAX ID: ${maxUserId}`,
     '',
     `Организация: ${data.org || '-'}`,
-    `Подразделение: ${data.dept || '-'}`,
     `ФИО: ${data.fio || '-'}`,
     `Должность: ${data.position || '-'}`,
     `Телефон: ${data.phone || '-'}`,

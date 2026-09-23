@@ -57,15 +57,14 @@ export async function handleSdsTextState(ctx, session, text) {
 
   if (session.state === State.WAIT_SDS_ORG) {
     session.sdsData.org = text;
-    session.state = State.WAIT_SDS_DEPT;
+    session.state = State.WAIT_SDS_FIO;
     setSession(maxUserId, session);
 
-    await ctx.reply('Введите подразделение:');
+    await ctx.reply('Введите ФИО полностью:');
     return true;
   }
 
   if (session.state === State.WAIT_SDS_DEPT) {
-    session.sdsData.dept = text;
     session.state = State.WAIT_SDS_FIO;
     setSession(maxUserId, session);
 
