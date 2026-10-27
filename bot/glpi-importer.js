@@ -1,4 +1,7 @@
 import http from 'node:http';
+import { timingSafeEqual } from 'node:crypto';
+import { pathToFileURL } from 'node:url';
+import { isValidEmail } from './utils/validation.js';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import 'dotenv/config';
@@ -45,15 +48,12 @@ function readJsonBody(req) {
     });
 
     req.on('error', reject);
+    req.on('aborted', () => reject(new Error('request_aborted')));
   });
 }
 
 function normalizeEmail(value) {
   return String(value || '').trim().toLowerCase();
-}
-
-function isValidEmail(value) {
-  return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
 
 function escapeLdapFilterValue(value) {
@@ -96,55 +96,57 @@ async function runGlpiImport(email) {
   return { stdout, stderr, filter };
 }
 
-function isAuthorized(req) {
-  if (!SECRET) return true;
-  return req.headers.authorization === `Bearer ${SECRET}`;
-}
-
-const server = http.createServer(async (req, res) => {
-  if (req.method === 'GET' && req.url === '/health') {
-    sendJson(res, 200, { ok: true });
-    return;
-  }
-
-  if (req.method !== 'POST' || req.url !== '/internal/import-ldap-user') {
-    sendJson(res, 404, { ok: false, error: 'not_found' });
-    return;
-  }
-
-  if (!isAuthorized(req)) {
-    sendJson(res, 403, { ok: false, error: 'forbidden' });
-    return;
-  }
-
-  try {
-    const body = await readJsonBody(req);
-    const email = normalizeEmail(body.email);
-
-    if (!isValidEmail(email)) {
-      sendJson(res, 400, { ok: false, error: 'bad_email' });
+export function createImporterServer({ secret = SECRET, runImport = runGlpiImport, maxConcurrent = 1 } = {}) {
+  if (!secret.trim()) throw new Error('GLPI_IMPORT_SECRET обязателен для запуска importer');
+  if (!Number.isSafeInteger(maxConcurrent) || maxConcurrent < 1) throw new Error('Некорректный лимит импортов');
+  const expected = Buffer.from(`Bearer ${secret}`);
+  let active = 0;
+  const server = http.createServer(async (req, res) => {
+    if (req.method === 'GET' && req.url === '/health') {
+      sendJson(res, 200, { ok: true });
       return;
     }
+    if (req.method !== 'POST' || req.url !== '/internal/import-ldap-user') {
+      sendJson(res, 404, { ok: false, error: 'not_found' });
+      return;
+    }
+    const supplied = Buffer.from(req.headers.authorization || '');
+    if (supplied.length !== expected.length || !timingSafeEqual(supplied, expected)) {
+      sendJson(res, 403, { ok: false, error: 'forbidden' });
+      return;
+    }
+    if (active >= maxConcurrent) {
+      res.setHeader('Retry-After', '5');
+      sendJson(res, 429, { ok: false, error: 'import_busy' });
+      return;
+    }
+    active++;
+    try {
+      const body = await readJsonBody(req);
+      const email = normalizeEmail(body?.email);
+      if (!isValidEmail(email)) {
+        sendJson(res, 400, { ok: false, error: 'bad_email' });
+        return;
+      }
+      await runImport(email);
+      sendJson(res, 200, { ok: true });
+    } catch (error) {
+      console.error('[GLPI Importer] Import failed:', error.code || error.name);
+      if (!res.destroyed) {
+        const badRequest = ['invalid_json', 'request_body_too_large'].includes(error.message);
+        sendJson(res, badRequest ? 400 : 500, { ok: false, error: badRequest ? error.message : 'import_failed' });
+      }
+    } finally {
+      active--;
+    }
+  });
+  server.requestTimeout = 15000;
+  server.headersTimeout = 10000;
+  return server;
+}
 
-    const result = await runGlpiImport(email);
-    sendJson(res, 200, {
-      ok: true,
-      email,
-      filter: result.filter,
-      stdout: result.stdout,
-      stderr: result.stderr
-    });
-  } catch (err) {
-    console.error('[GLPI Importer] Error:', err.message);
-    sendJson(res, 500, {
-      ok: false,
-      error: err.message,
-      stdout: err.stdout || '',
-      stderr: err.stderr || ''
-    });
-  }
-});
-
-server.listen(PORT, HOST, () => {
-  console.log(`[GLPI Importer] Listening on http://${HOST}:${PORT}`);
-});
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  createImporterServer().listen(PORT, HOST, () => {
+    console.log(`[GLPI Importer] Listening on http://${HOST}:${PORT}`);
+  });
+}

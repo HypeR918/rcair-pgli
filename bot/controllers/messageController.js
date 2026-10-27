@@ -1,3 +1,4 @@
+import { cleanupDownloadedFiles } from '../services/maxFileService.js';
 import { State } from '../utils/constants.js';
 import { getSession, setSession } from '../state/sessionStore.js';
 
@@ -68,13 +69,14 @@ export function registerMessageHandler(bot) {
 
       await ctx.reply('Используйте меню или отправьте /start.');
     } catch (error) {
-      console.error('message_created error:', error);
+      console.error('message_created error:', error.message);
 
       if (
         session.state === State.WAIT_NEW_TICKET_FILES ||
         session.state === State.WAIT_TICKET_COMMENT
       ) {
-        setSession(maxUserId, { state: State.IDLE });
+        await cleanupDownloadedFiles(session.ticketDraft?.files || []);
+        await setSession(maxUserId, { state: State.IDLE });
         await ctx.reply('Произошла ошибка при обработке файла. Попробуйте отправить другой файл или вернитесь в меню.');
       } else {
         await ctx.reply('Произошла ошибка. Попробуйте позже.');

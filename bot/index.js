@@ -1,5 +1,7 @@
 import { Bot } from '@maxhub/max-bot-api';
 import http from 'node:http';
+import { serializeUserUpdates } from './utils/userUpdates.js';
+import { startAttachmentCleanup } from './services/maxFileService.js';
 
 import { env, requireEnv } from './config/env.js';
 
@@ -40,9 +42,11 @@ const bot = new Bot(env.BOT_TOKEN, {
   },
 });
 
-bot.catch(error => {
-  console.error('Bot error:', error);
-  process.exit(1);
+bot.use(serializeUserUpdates);
+
+bot.catch(async (error, ctx) => {
+  console.error('Bot handler error:', error.message);
+  try { await ctx.reply('Ошибка обработки запроса. Попробуйте позже.'); } catch {}
 });
 
 function startHealthServer() {
@@ -81,6 +85,7 @@ async function startApp() {
 
   await ensureDatabaseSchema();
   await loadAllSessions();
+  await startAttachmentCleanup();
 
   registerUserHandlers(bot);
   registerMessageHandler(bot);

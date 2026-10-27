@@ -33,16 +33,15 @@ function hydrateFromStorage(row) {
 }
 
 export function getSession(maxUserId) {
-  return cache.get(maxUserId) || null;
+  const session = cache.get(String(maxUserId));
+  return session ? structuredClone(session) : null;
 }
 
 export async function setSession(maxUserId, session) {
-  cache.set(maxUserId, session);
-
   const safe = sanitizeForStorage(session);
 
   if (!safe) {
-    await pool.execute('DELETE FROM bot_sessions WHERE max_id = ?', [maxUserId]);
+    await deleteSession(maxUserId);
     return;
   }
 
@@ -52,11 +51,12 @@ export async function setSession(maxUserId, session) {
     'INSERT INTO bot_sessions (max_id, session_data) VALUES (?, ?) ON DUPLICATE KEY UPDATE session_data = VALUES(session_data)',
     [maxUserId, json]
   );
+  cache.set(String(maxUserId), structuredClone(session));
 }
 
 export async function deleteSession(maxUserId) {
-  cache.delete(maxUserId);
   await pool.execute('DELETE FROM bot_sessions WHERE max_id = ?', [maxUserId]);
+  cache.delete(String(maxUserId));
 }
 
 export async function loadAllSessions() {
@@ -65,7 +65,7 @@ export async function loadAllSessions() {
   for (const row of rows) {
     const session = hydrateFromStorage(row);
     if (session) {
-      cache.set(row.max_id, session);
+      cache.set(String(row.max_id), session);
     }
   }
 

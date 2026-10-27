@@ -241,6 +241,8 @@ async function getGlpiSession() {
       ...getGlpiApiHeaders(),
       Authorization: `user_token ${env.GLPI_API_USER_TOKEN}`,
     },
+    signal: AbortSignal.timeout(env.GLPI_API_TIMEOUT_MS),
+    timeout: env.GLPI_API_TIMEOUT_MS,
     validateStatus: () => true,
   });
 
@@ -263,6 +265,8 @@ export async function glpiKillSession(sessionToken) {
 
     await axios.get(`${baseUrl}/killSession`, {
       headers: getGlpiApiHeaders(sessionToken),
+      signal: AbortSignal.timeout(env.GLPI_API_TIMEOUT_MS),
+      timeout: env.GLPI_API_TIMEOUT_MS,
       validateStatus: () => true,
     });
   } catch (err) {
@@ -282,6 +286,13 @@ export async function killCurrentSession() {
   }
 }
 
+function glpiResponseError(status, data) {
+  const error = new Error(`GLPI API request failed: ${status}`);
+  error.status = status;
+  if (Array.isArray(data) && typeof data[0] === 'string') error.code = data[0];
+  return error;
+}
+
 export async function glpiApiRequest(method, path, data = null) {
   let sessionToken = await getGlpiSession();
 
@@ -299,6 +310,8 @@ export async function glpiApiRequest(method, path, data = null) {
       method,
       url: `${baseUrl}${finalPath}`,
       headers: getGlpiApiHeaders(sessionToken),
+      signal: AbortSignal.timeout(env.GLPI_API_TIMEOUT_MS),
+      timeout: env.GLPI_API_TIMEOUT_MS,
       validateStatus: () => true,
     };
 
@@ -312,11 +325,12 @@ export async function glpiApiRequest(method, path, data = null) {
       invalidateSession();
       sessionToken = await getGlpiSession();
       config.headers = getGlpiApiHeaders(sessionToken);
+      config.signal = AbortSignal.timeout(env.GLPI_API_TIMEOUT_MS);
       const retry = await axios(config);
 
       if (retry.status < 200 || retry.status >= 300) {
         console.error('GLPI API request failed:', method, finalPath, retry.status, retry.data);
-        throw new Error(`GLPI API request failed: ${retry.status}`);
+        throw glpiResponseError(retry.status, retry.data);
       }
 
       return retry.data;
@@ -324,7 +338,7 @@ export async function glpiApiRequest(method, path, data = null) {
 
     if (res.status < 200 || res.status >= 300) {
       console.error('GLPI API request failed:', method, finalPath, res.status, res.data);
-      throw new Error(`GLPI API request failed: ${res.status}`);
+      throw glpiResponseError(res.status, res.data);
     }
 
     return res.data;
@@ -387,7 +401,8 @@ export async function glpiMultipartRequest(method, path, form) {
       url: `${baseUrl}${finalPath}`,
       headers,
       data: form,
-      timeout: 120000,
+      signal: AbortSignal.timeout(Math.max(env.GLPI_API_TIMEOUT_MS, 120000)),
+      timeout: Math.max(env.GLPI_API_TIMEOUT_MS, 120000),
       maxBodyLength: Infinity,
       maxContentLength: Infinity,
       validateStatus: () => true,
@@ -1296,6 +1311,7 @@ export async function getGlpiUserTicketsAsRequester(glpiUserId, options = {}) {
        WHERE tu.users_id = ?
          AND tu.type = 1
          AND t.status != 6
+         AND t.is_deleted = 0
        ORDER BY t.id DESC
        LIMIT ?`,
       [userId, limit]

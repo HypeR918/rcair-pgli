@@ -43,6 +43,7 @@ export const env = {
   GLPI_IMPORT_CHECK_ATTEMPTS: Number(process.env.GLPI_IMPORT_CHECK_ATTEMPTS || 10),
   GLPI_IMPORT_CHECK_DELAY_MS: Number(process.env.GLPI_IMPORT_CHECK_DELAY_MS || 1500),
 
+  GLPI_API_TIMEOUT_MS: Number(process.env.GLPI_API_TIMEOUT_MS || 30000),
   GLPI_API_URL: process.env.GLPI_API_URL,
   GLPI_API_USER_TOKEN: process.env.GLPI_API_USER_TOKEN,
   GLPI_API_APP_TOKEN: process.env.GLPI_API_APP_TOKEN,
@@ -59,6 +60,10 @@ export const env = {
 };
 
 export function requireEnv() {
+  if (!Number.isSafeInteger(env.GLPI_API_TIMEOUT_MS) || env.GLPI_API_TIMEOUT_MS < 1000
+      || !Number.isSafeInteger(env.EMAIL_CODE_RESEND_COOLDOWN_MS) || env.EMAIL_CODE_RESEND_COOLDOWN_MS < 1000) {
+    throw new Error('Некорректные таймауты API или отправки кодов');
+  }
   const required = [
     'BOT_TOKEN',
 

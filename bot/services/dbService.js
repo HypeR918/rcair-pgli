@@ -58,6 +58,11 @@ async function executeBestEffort(poolInstance, sql, params = []) {
 
 export async function ensureDatabaseSchema() {
   const queries = [
+    `CREATE TABLE IF NOT EXISTS bot_verification_limits (
+      scope_key VARCHAR(80) PRIMARY KEY,
+      next_allowed_at BIGINT NOT NULL DEFAULT 0,
+      KEY idx_verification_expiry (next_allowed_at)
+    )`,
     `CREATE TABLE IF NOT EXISTS bot_users (
       id INT AUTO_INCREMENT PRIMARY KEY,
       max_id BIGINT NOT NULL,
@@ -172,6 +177,7 @@ export async function ensureDatabaseSchema() {
         err.code !== 'ER_DUP_KEYNAME'
       ) {
         console.error('BOT DB schema error:', err.message);
+        throw err;
       }
     }
   }
@@ -221,21 +227,22 @@ export async function isMaxIdBlocked(maxUserId) {
 export async function blockMaxId(maxUserId) {
   const normalizedMaxId = normalizeMaxId(maxUserId);
 
-  await botPool.execute(
-    `INSERT INTO blocked_max_ids (max_id, blocked_at)
-     VALUES (?, NOW())
-     ON DUPLICATE KEY UPDATE blocked_at = NOW()`,
-    [normalizedMaxId]
-  );
+  await withBotTransaction(async connection => {
+    await connection.execute(
+      `INSERT INTO blocked_max_ids (max_id, blocked_at)
+       VALUES (?, NOW())
+       ON DUPLICATE KEY UPDATE blocked_at = NOW()`,
+      [normalizedMaxId]
+    );
 
-  await botPool.execute(
-    `INSERT INTO bot_users (max_id, is_blocked)
-     VALUES (?, 1)
-     ON DUPLICATE KEY UPDATE
-       is_blocked = 1,
-       updated_at = NOW()`,
-    [normalizedMaxId]
-  );
+    await connection.execute(
+      `INSERT INTO bot_users (max_id, is_blocked)
+       VALUES (?, 1)
+       ON DUPLICATE KEY UPDATE
+         is_blocked = 1`,
+      [normalizedMaxId]
+    );
+  });
 
   await executeBestEffort(
     glpiPool,
@@ -247,18 +254,19 @@ export async function blockMaxId(maxUserId) {
 export async function unblockMaxId(maxUserId) {
   const normalizedMaxId = normalizeMaxId(maxUserId);
 
-  await botPool.execute(
-    'DELETE FROM blocked_max_ids WHERE max_id = ?',
-    [normalizedMaxId]
-  );
+  await withBotTransaction(async connection => {
+    await connection.execute(
+      'DELETE FROM blocked_max_ids WHERE max_id = ?',
+      [normalizedMaxId]
+    );
 
-  await botPool.execute(
-    `UPDATE bot_users
-     SET is_blocked = 0,
-         updated_at = NOW()
-     WHERE max_id = ?`,
-    [normalizedMaxId]
-  );
+    await connection.execute(
+      `UPDATE bot_users
+       SET is_blocked = 0
+       WHERE max_id = ?`,
+      [normalizedMaxId]
+    );
+  });
 
   await executeBestEffort(
     glpiPool,
@@ -319,6 +327,8 @@ async function getFreshGlpiUserById(glpiUserId) {
        LEFT JOIN glpi_useremails e ON e.users_id = u.id
        WHERE u.id = ?
          AND u.is_active = 1
+         AND u.is_deleted = 0
+         AND COALESCE(u.is_blocked, 0) = 0
        ORDER BY e.is_default DESC, e.id ASC
        LIMIT 1`,
       [normalizedGlpiUserId]
@@ -351,6 +361,8 @@ async function getFreshGlpiUserByEmail(email) {
        INNER JOIN glpi_useremails e ON e.users_id = u.id
        WHERE LOWER(e.email) = ?
          AND u.is_active = 1
+         AND u.is_deleted = 0
+         AND COALESCE(u.is_blocked, 0) = 0
        ORDER BY u.id DESC
        LIMIT 1`,
       [normalizedEmail]
@@ -419,6 +431,8 @@ export async function markBotUserAuthorized(maxUserId) {
 export async function findGlpiUserByMaxId(maxUserId) {
   const normalizedMaxId = normalizeMaxId(maxUserId);
 
+  if (await isMaxIdBlocked(normalizedMaxId)) return null;
+
   const botUser = await getBotUserByMaxId(normalizedMaxId);
 
   if (botUser && Number(botUser.is_blocked || 0) === 1) {
@@ -431,9 +445,11 @@ export async function findGlpiUserByMaxId(maxUserId) {
     freshUser = await getFreshGlpiUserById(botUser.glpi_user_id);
   }
 
-  if (!freshUser && botUser?.email) {
+  if (!botUser?.glpi_user_id && botUser?.email) {
     freshUser = await getFreshGlpiUserByEmail(botUser.email);
   }
+
+  if (botUser?.glpi_user_id && !freshUser) return null;
 
   if (freshUser) {
     await updateBotUserGlpiData(normalizedMaxId, freshUser, botUser.email);
@@ -453,6 +469,7 @@ export async function findGlpiUserByMaxId(maxUserId) {
        LEFT JOIN glpi_useremails e ON e.users_id = u.id
        WHERE u.max_id = ?
          AND u.is_active = 1
+         AND u.is_deleted = 0
          AND COALESCE(u.is_blocked, 0) = 0
        ORDER BY e.is_default DESC, e.id ASC
        LIMIT 1`,
@@ -534,15 +551,20 @@ export async function updateSdsRequestGlpiTicketId(requestId, glpiTicketId) {
   );
 }
 
-export async function getPendingSdsRequests(limit = 20) {
+export async function getPendingSdsRequests(limit = 20, afterId = 0, upToId = null) {
+  if (upToId === null) {
+    const [rows] = await botPool.execute('SELECT COALESCE(MAX(id), 0) AS max_id FROM sds_requests');
+    upToId = Number(rows[0].max_id);
+  }
   const [rows] = await botPool.execute(
-    `SELECT id, max_id, email, glpi_ticket_id
+    `SELECT id, max_id, email, glpi_ticket_id, ? AS polling_max_id
      FROM sds_requests
      WHERE status = 'PENDING'
+       AND id > ? AND id <= ?
        AND glpi_ticket_id IS NOT NULL
      ORDER BY id ASC
      LIMIT ?`,
-    [limit]
+    [upToId, afterId, upToId, limit]
   );
 
   return rows;
@@ -765,4 +787,60 @@ export async function saveBotTicketRating(maxUserId, ticketId, rating, comment =
   );
 
   return result.affectedRows === 1;
+}
+
+export async function getAuthorizedTicketUser(maxUserId, ticketId) {
+  const user = await findGlpiUserByMaxId(maxUserId);
+  if (!user) return null;
+  const [rows] = await glpiPool.execute(
+    `SELECT 1 FROM glpi_tickets_users tu
+     INNER JOIN glpi_tickets t ON t.id = tu.tickets_id
+     WHERE tu.tickets_id = ? AND tu.users_id = ? AND tu.type = 1
+       AND t.is_deleted = 0 LIMIT 1`,
+    [ticketId, user.id]
+  );
+  return rows.length ? user : null;
+}
+
+export async function reserveVerificationSend(maxUserId, email, cooldownMs) {
+  const keys = [`user:${normalizeMaxId(maxUserId)}`, `email:${textHash(normalizeEmail(email))}`];
+  return withBotTransaction(async connection => {
+    const now = Date.now();
+    // Сначала блокируем MAX ID. Повторные попытки с новыми адресами не создают строки для email.
+    for (const key of keys) {
+      await connection.execute('INSERT IGNORE INTO bot_verification_limits (scope_key) VALUES (?)', [key]);
+      const [rows] = await connection.execute(
+        'SELECT next_allowed_at FROM bot_verification_limits WHERE scope_key = ? FOR UPDATE', [key]
+      );
+      const remaining = Math.max(0, Number(rows[0].next_allowed_at) - now);
+      if (remaining) return remaining;
+    }
+    await connection.execute(
+      'UPDATE bot_verification_limits SET next_allowed_at = ? WHERE scope_key IN (?, ?)',
+      [now + cooldownMs, ...keys]
+    );
+    return 0;
+  });
+}
+
+export async function markSdsRequestMissing(requestId) {
+  await botPool.execute(
+    "UPDATE sds_requests SET status = 'MISSING', decided_at = NOW() WHERE id = ?", [requestId]
+  );
+}
+
+
+async function withBotTransaction(action) {
+  const connection = await botPool.getConnection();
+  try {
+    await connection.beginTransaction();
+    const result = await action(connection);
+    await connection.commit();
+    return result;
+  } catch (error) {
+    await connection.rollback();
+    throw error;
+  } finally {
+    connection.release();
+  }
 }

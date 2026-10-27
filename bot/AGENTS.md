@@ -72,9 +72,9 @@ query_db.py               — посторонняя dev-утилита, к бо
 3. **Авторизация**: `/start` → проверка блокировки → поиск `max_id` в базе → ввод email → (если `EMAIL_VERIFICATION_ENABLED=true`) 6-значный код по SMTP (HMAC-хэш, TTL 10 мин, 3 попытки, затем блокировка MAX ID) → импорт/поиск пользователя в GLPI через importer → привязка `max_id` к `glpi_users`. Если пользователь не найден — запускается диалог СДС.
 4. **Заявки**: тема → описание → файлы → подтверждение → `POST /Ticket` в GLPI → документы через `POST /Document` + `POST /Document_Item`. Все пишущие запросы к GLPI идут с `?session_write=true` (это делает `glpiApiRequest` автоматически).
 5. **Фоновые polling'и** (оба `setInterval`, с защитой от повторного входа флагом `*InProgress`):
-   - `ticketPolling.js` (`GLPI_TICKET_POLL_MS`, по умолчанию 60000): до 50 заявок за проход; уведомления о новых публичных комментариях (дедупликация через `bot_ticket_followups`), предложенных решениях (статус 5) и закрытии (статус 6). Удалённые из GLPI заявки вычищаются из локальной базы.
+   - `ticketPolling.js` (`GLPI_TICKET_POLL_MS`, по умолчанию 60000): все заявки на начало прохода страницами по 50; уведомления о новых публичных комментариях (дедупликация через `bot_ticket_followups`), предложенных решениях (статус 5) и закрытии (статус 6). Удалённые из GLPI заявки вычищаются из локальной базы.
    - `sdsPolling.js` (`GLPI_APPROVAL_POLL_MS`, по умолчанию 60000): решения/комментарии регистрационных тикетов разбираются `parseDecisionText` по словарям `approveWords`/`rejectWords`; при APPROVED — повторный LDAP-импорт и активация, при REJECTED — отказ пользователю.
-6. **GLPI-сессия**: `initSession` по `GLPI_API_USER_TOKEN` (+ опциональный `App-Token`), токен кэшируется 30 минут, при 401 — один retry с новой сессией. Записи в `glpi_users` (`max_id`, `is_blocked`) идут напрямую в SQL в режиме best-effort; остальная работа с GLPI — только REST API.
+6. **GLPI-сессия**: `initSession` по `GLPI_API_USER_TOKEN` (+ опциональный `App-Token`), токен кэшируется 30 минут, при 401 — один retry с новой сессией. Записи в `glpi_users` (`max_id`, `is_blocked`) идут напрямую в SQL в режиме best-effort; права на заявки дополнительно проверяются по текущим связям заявителей в БД GLPI.
 7. **Importer**: основной бот не имеет доступа к Docker хоста GLPI, поэтому LDAP-импорт вынесен в `glpi-importer.js` — маленький HTTP-сервис (по умолчанию `127.0.0.1:3100`), единственная ручка `POST /internal/import-ldap-user {email}` с `Authorization: Bearer GLPI_IMPORT_SECRET`.
 
 ## Команды запуска
@@ -91,11 +91,15 @@ docker run --env-file .env -p 3000:3000 max-bot
 
 Проверка живости: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot"}`.
 
-**Внимание**: `npm start` в `package.json` указывает на несуществующий `bot.js` — это устаревший скрипт, реальная точка входа `index.js` (как в Dockerfile). Пользуйтесь `node index.js`.
+`npm start` запускает `index.js`. Перед развёртыванием прочитайте `SECURITY_CHANGES.md`: там описаны настройки вложений, лимиты, повторная обработка СДС и миграция `bot_verification_limits`.
 
 ## Тестирование
 
-Тестов в проекте нет: `npm test` — заглушка, падающая с ошибкой. Проверка изменений — ручная: синтаксис (`node --check <file>`), запуск бота с реальным `.env` и проход сценариев в MAX. Если добавляете тесты — фреймворк придётся вводить с нуля.
+`npm test` запускает регрессионные проверки через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны.
+
+Интеграционный тест MariaDB пропускается без `RCAIR_TEST_DB_PORT`. Для него нужна отдельная временная MariaDB 11.4 на `127.0.0.1` с пустым паролем root; тест создаёт и удаляет уникальную БД `rcair_test_*`. Запуск: `RCAIR_TEST_DB_PORT=<порт> npm test`. Не используйте рабочую БД.
+
+После тестов проверяйте реальные сценарии MAX/GLPI на предназначенных для этого учётных записях; unit-тесты не заменяют сквозную проверку.
 
 ## Переменные окружения
 
@@ -107,7 +111,7 @@ docker run --env-file .env -p 3000:3000 max-bot
 
 ## База данных
 
-Таблицы бота создаются и мигрируют автоматически при старте (`ensureDatabaseSchema` в `services/dbService.js`): `bot_users`, `blocked_max_ids`, `sds_requests`, `bot_user_tickets`, `bot_ticket_followups`, `bot_ticket_ratings`, `bot_sessions`. Дополнительно в базу GLPI best-effort добавляются колонки `glpi_users.max_id` и `glpi_users.is_blocked`. Миграции идемпотентны (`CREATE TABLE IF NOT EXISTS`, `ADD/DROP COLUMN` с игнорированием дублей). Все запросы — только prepared statements через `pool.execute`.
+Таблицы бота создаются и мигрируют автоматически при старте (`ensureDatabaseSchema` в `services/dbService.js`): `bot_users`, `blocked_max_ids`, `sds_requests`, `bot_user_tickets`, `bot_ticket_followups`, `bot_ticket_ratings`, `bot_sessions`. Дополнительно в базу GLPI best-effort добавляются колонки `glpi_users.max_id` и `glpi_users.is_blocked`. Миграции идемпотентны (`CREATE TABLE IF NOT EXISTS`, `ADD/DROP COLUMN` с игнорированием дублей); неожиданные ошибки обязательных миграций останавливают запуск. Все запросы — только prepared statements через `pool.execute`.
 
 ## Соглашения по коду
 
@@ -124,7 +128,7 @@ docker run --env-file .env -p 3000:3000 max-bot
 - Код верификации email хранится и сохраняется в БД только как HMAC-SHA256 (`EMAIL_CODE_SECRET`, fallback — `BOT_TOKEN`); сам код не логируется. Проверка — `crypto.timingSafeEqual`.
 - Блокировка MAX ID после `EMAIL_CODE_MAX_ATTEMPTS` неверных попыток; разблокировка — только через подтверждение email.
 - Имена скачиваемых файлов санитизируются (`safeFilename`), размер ограничен `MAX_ATTACHMENT_BYTES`, временные файлы удаляются после загрузки в GLPI.
-- В `glpi-importer.js` аутентификация отключается, если `GLPI_IMPORT_SECRET` пуст (`if (!SECRET) return true`) — в проде секрет обязателен; по умолчанию сервис слушает только `127.0.0.1`.
+- `glpi-importer.js` отказывается запускаться без `GLPI_IMPORT_SECRET`; по умолчанию сервис слушает только `127.0.0.1`. Не публикуйте importer в открытый Интернет.
 - Docker-образ устанавливает корневые сертификаты НУЦ Минцифры РФ и задаёт `NODE_EXTRA_CA_CERTS` — без них TLS к `platform-api2.max.ru` не работает. Не отключайте проверку TLS в основном боте.
 - В `miniproject/bot.js` захардкожен токен и стоит `NODE_TLS_REJECT_UNAUTHORIZED=0` — это изолированный прототип; не переносите эти практики в основной код (токен стоит считать скомпрометированным).
 
@@ -136,7 +140,7 @@ docker run --env-file .env -p 3000:3000 max-bot
 
 ## Подводные камни (расхождения кода и документации)
 
-- `package.json`: `"main": "bot.js"` и `npm start` → `node bot.js` устарели — файла `bot.js` в корне нет, вход `index.js`.
+- Точка входа основного бота — `index.js`; `npm start` использует её.
 - `DB_SCHEMA.md` частично устарела: перечисляет колонки (`bot_users.glpi_user_name`, `bot_user_tickets.title` и др.), которые `ensureDatabaseSchema()` наоборот удаляет. Источник истины по схеме — код миграций в `services/dbService.js`.
 - В диаграммах `ARCHITECTURE.md` указан интервал опроса заявок 5 секунд — фактический дефолт `GLPI_TICKET_POLL_MS` = 60000 мс.
 - `реплики.txt` — ранний черновик `REPLIKI_BOTA.md`; при изменении текстов бота обновляйте `REPLIKI_BOTA.md`.

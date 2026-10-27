@@ -1,5 +1,6 @@
 import {
   getActiveBotUserTickets,
+  getAuthorizedTicketUser,
   ensureBotUserTicket,
   isFollowupKnown,
   markFollowupAsKnown,
@@ -27,20 +28,7 @@ import {
 let ticketPollingInProgress = false;
 
 function isGlpiTicketNotFoundError(error) {
-  const message = String(error?.message || '').toLowerCase();
-
-  if (message.includes('error_right_missing')) {
-    return false;
-  }
-
-  return (
-    message.includes('404') ||
-    message.includes('error_item_not_found') ||
-    message.includes('item not found') ||
-    message.includes('not found') ||
-    message.includes('не найден') ||
-    message.includes('не существует')
-  );
+  return error?.status === 404 || error?.code === 'ERROR_ITEM_NOT_FOUND';
 }
 
 async function sendMessageToMaxUser(bot, maxUserId, text, options = {}) {
@@ -234,6 +222,7 @@ export async function pollUserTickets(bot) {
         }
 
         try {
+          if (!await getAuthorizedTicketUser(localTicket.max_id, ticketId)) continue;
           const ticket = await getGlpiTicket(ticketId);
           const status = Number(ticket.status || 0);
 

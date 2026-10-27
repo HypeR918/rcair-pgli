@@ -45,7 +45,7 @@ async function submitSdsRequest(ctx, session) {
   session.state = State.WAIT_SDS_APPROVAL;
   session.sdsRequestId = localRequestId;
   session.glpiTicketId = glpiTicketId;
-  setSession(maxUserId, session);
+  await setSession(maxUserId, session);
 
   await ctx.reply(
     'Данные переданы администраторам. Я пришлю уведомление, когда будет вынесено решение.'
@@ -58,7 +58,7 @@ export async function handleSdsTextState(ctx, session, text) {
   if (session.state === State.WAIT_SDS_ORG) {
     session.sdsData.org = text;
     session.state = State.WAIT_SDS_FIO;
-    setSession(maxUserId, session);
+    await setSession(maxUserId, session);
 
     await ctx.reply('Введите ФИО полностью:');
     return true;
@@ -66,7 +66,7 @@ export async function handleSdsTextState(ctx, session, text) {
 
   if (session.state === State.WAIT_SDS_DEPT) {
     session.state = State.WAIT_SDS_FIO;
-    setSession(maxUserId, session);
+    await setSession(maxUserId, session);
 
     await ctx.reply('Введите ФИО полностью:');
     return true;
@@ -75,7 +75,7 @@ export async function handleSdsTextState(ctx, session, text) {
   if (session.state === State.WAIT_SDS_FIO) {
     session.sdsData.fio = text;
     session.state = State.WAIT_SDS_POSITION;
-    setSession(maxUserId, session);
+    await setSession(maxUserId, session);
 
     await ctx.reply('Введите должность:');
     return true;
@@ -84,7 +84,7 @@ export async function handleSdsTextState(ctx, session, text) {
   if (session.state === State.WAIT_SDS_POSITION) {
     session.sdsData.position = text;
     session.state = State.WAIT_SDS_PHONE;
-    setSession(maxUserId, session);
+    await setSession(maxUserId, session);
 
     await ctx.reply('Введите телефон:');
     return true;
@@ -115,22 +115,6 @@ export async function handleApprovedSdsRequest(bot, request) {
   const maxUserId = request.max_id;
   const email = normalizeEmail(request.email);
 
-  await approveSdsRequest(
-    request.id,
-    request.decision_text || 'Заявка подтверждена',
-    request.glpi_ticket_status || null
-  );
-
-  await bot.api.sendMessageToUser(
-    maxUserId,
-    'Заявка подтверждена'
-  );
-
-  await bot.api.sendMessageToUser(
-    maxUserId,
-    'Проверяю учетную запись в каталоге пользователей...'
-  );
-
   const importResult = await importUserFromSdsViaGlpi(email);
 
   if (importResult && importResult.id) {
@@ -150,29 +134,26 @@ export async function handleApprovedSdsRequest(bot, request) {
       );
 
       await showWelcomeAndMenu(fakeCtx, user);
+      await approveSdsRequest(request.id, request.decision_text, request.glpi_ticket_status);
       return;
     }
   }
 
-  await bot.api.sendMessageToUser(
-    maxUserId,
-    'Заявка подтверждена, но учетная запись пока не найдена. Обратитесь к администратору:\nНаправьте заявку по email на адрес support@gov70.ru'
-  );
+  throw new Error('Подтверждённая учётная запись ещё не найдена; импорт будет повторён');
 }
 
 export async function handleRejectedSdsRequest(bot, request) {
   const maxUserId = request.max_id;
 
-  await rejectSdsRequest(
-    request.id,
-    request.decision_text || 'Заявка отклонена',
-    request.glpi_ticket_status || null
-  );
-
-  deleteSession(maxUserId);
+  await deleteSession(maxUserId);
 
   await bot.api.sendMessageToUser(
     maxUserId,
     `По заявке получен отказ.\n\n${request.decision_text || 'Причина отказа не указана.'}`
+  );
+  await rejectSdsRequest(
+    request.id,
+    request.decision_text || 'Заявка отклонена',
+    request.glpi_ticket_status || null
   );
 }

@@ -12,6 +12,7 @@ import {
 } from '../services/emailService.js';
 
 import {
+  reserveVerificationSend,
   isMaxIdBlocked,
   blockMaxId,
   unblockMaxId,
@@ -36,7 +37,7 @@ import {
 export async function showWelcomeAndMenu(ctx, user) {
   const maxUserId = ctx.user.user_id;
 
-  setSession(maxUserId, {
+  await setSession(maxUserId, {
     state: State.IDLE,
     glpiUserId: user.id,
   });
@@ -66,7 +67,7 @@ export async function showMenu(ctx) {
     return;
   }
 
-  setSession(maxUserId, {
+  await setSession(maxUserId, {
     state: State.IDLE,
     glpiUserId: user.id,
   });
@@ -79,20 +80,11 @@ export async function showMenu(ctx) {
 export async function startEmailVerification(ctx, email, flow) {
   const maxUserId = ctx.user.user_id;
   const normalizedEmail = normalizeEmail(email);
-  const session = getSession(maxUserId);
-
-  const cooldownMs = env.EMAIL_CODE_RESEND_COOLDOWN_MS;
-
-  if (
-    session?.verificationCodeHash &&
-    session?.verificationSentAt &&
-    Date.now() - session.verificationSentAt < cooldownMs
-  ) {
-    const remainingSeconds = Math.ceil(
-      (cooldownMs - (Date.now() - session.verificationSentAt)) / 1000
-    );
-
-    await ctx.reply(`Повторную отправку можно запросить через ${remainingSeconds} сек.`);
+  const remainingMs = await reserveVerificationSend(
+    maxUserId, normalizedEmail, env.EMAIL_CODE_RESEND_COOLDOWN_MS
+  );
+  if (remainingMs > 0) {
+    await ctx.reply(`Повторную отправку можно запросить через ${Math.ceil(remainingMs / 1000)} сек.`);
     return;
   }
 
@@ -101,7 +93,7 @@ export async function startEmailVerification(ctx, email, flow) {
   // отправляем письмо ДО сохранения сессии, чтобы код не остался в базе при сбое
   await sendEmailVerificationCode(normalizedEmail, code);
 
-  setSession(maxUserId, {
+  await setSession(maxUserId, {
     state: State.WAIT_EMAIL_VERIFICATION_CODE,
     verificationEmail: normalizedEmail,
     verificationCodeHash: hashVerificationCode(code),
@@ -135,7 +127,7 @@ export async function proceedAfterVerification(ctx, verifiedEmail) {
     }
   }
 
-  setSession(maxUserId, {
+  await setSession(maxUserId, {
     state: State.WAIT_SDS_ORG,
     verifiedEmail: normalizedEmail,
     sdsData: {},
@@ -149,10 +141,11 @@ export async function entryPoint(ctx) {
   const maxUserId = ctx.user.user_id;
 
   try {
+    await cleanupDownloadedFiles(getSession(maxUserId)?.ticketDraft?.files || []);
     const blocked = await isMaxIdBlocked(maxUserId);
 
     if (blocked) {
-      setSession(maxUserId, {
+      await setSession(maxUserId, {
         state: State.WAIT_UNLOCK_EMAIL,
         attempts: 0,
       });
@@ -169,7 +162,7 @@ export async function entryPoint(ctx) {
       return;
     }
 
-    setSession(maxUserId, {
+    await setSession(maxUserId, {
       state: State.WAIT_NEW_USER_EMAIL,
     });
 
@@ -180,7 +173,7 @@ export async function entryPoint(ctx) {
       }
     );
   } catch (error) {
-    console.error('entryPoint error:', error);
+    console.error('entryPoint error:', error.message);
     await ctx.reply('Ошибка подключения к базе данных\nПовторите попытку позже');
   }
 }
@@ -198,7 +191,7 @@ export async function handleEmailInput(ctx, email, flow) {
     return;
   }
 
-  setSession(ctx.user.user_id, {
+  await setSession(ctx.user.user_id, {
     state: State.IDLE,
   });
 
@@ -209,7 +202,7 @@ export async function handleVerificationCode(ctx, session, text) {
   const maxUserId = ctx.user.user_id;
 
   if (Date.now() > session.verificationExpiresAt) {
-    setSession(maxUserId, {
+    await setSession(maxUserId, {
       state:
         session.verificationFlow === State.WAIT_UNLOCK_EMAIL
           ? State.WAIT_UNLOCK_EMAIL
@@ -231,13 +224,13 @@ export async function handleVerificationCode(ctx, session, text) {
 
     if (attempts >= env.EMAIL_CODE_MAX_ATTEMPTS) {
       await blockMaxId(maxUserId);
-      deleteSession(maxUserId);
+      await deleteSession(maxUserId);
 
       await ctx.reply('Код введен неверно несколько раз. Ваш MAX ID заблокирован');
       return;
     }
 
-    setSession(maxUserId, session);
+    await setSession(maxUserId, session);
     await ctx.reply('Код неверный. Попробуйте еще раз');
     return;
   }
@@ -250,7 +243,7 @@ export async function handleVerificationCode(ctx, session, text) {
     await ctx.reply('MAX ID разблокирован');
   }
 
-  setSession(maxUserId, {
+  await setSession(maxUserId, {
     state: State.IDLE,
   });
 
