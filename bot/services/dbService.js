@@ -619,13 +619,26 @@ export async function getBotUserTickets(maxUserId, limit = 10) {
   return rows;
 }
 
-export async function getActiveBotUserTickets(limit = 50) {
+export async function getActiveBotUserTickets(limit = 50, afterId = 0, upToId = null) {
+  // Freeze the upper bound on the first page of a polling cycle.
+  // Tickets created during this cycle will be visited on the next cycle.
+  let snapshotMaxId = upToId;
+
+  if (snapshotMaxId === null) {
+    const [maxRows] = await botPool.execute(
+      'SELECT COALESCE(MAX(id), 0) AS max_id FROM bot_user_tickets'
+    );
+    snapshotMaxId = Number(maxRows[0]?.max_id || 0);
+  }
+
   const [rows] = await botPool.execute(
-    `SELECT id, max_id, glpi_ticket_id, solution_notified, closed_notified
+    `SELECT id, max_id, glpi_ticket_id, solution_notified, closed_notified,
+            ? AS polling_max_id
      FROM bot_user_tickets
+     WHERE id > ? AND id <= ?
      ORDER BY id ASC
      LIMIT ?`,
-    [limit]
+    [snapshotMaxId, afterId, snapshotMaxId, limit]
   );
 
   return rows;

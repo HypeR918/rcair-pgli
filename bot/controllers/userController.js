@@ -257,13 +257,36 @@ export async function handleVerificationCode(ctx, session, text) {
   await proceedAfterVerification(ctx, verifiedEmail);
 }
 
+async function handleStart(ctx, source) {
+  if (!ctx.user || !ctx.user.user_id) {
+    console.warn(`[START] ${source}: user_id отсутствует`);
+    return;
+  }
+
+  console.log(`[START] ${source}: max_id=${ctx.user.user_id}`);
+
+  try {
+    await entryPoint(ctx);
+  } catch (error) {
+    console.error(`[START] ${source} error:`, error);
+
+    try {
+      await ctx.reply(
+        'Не удалось запустить бота. Попробуйте отправить /start ещё раз.'
+      );
+    } catch (replyError) {
+      console.error(`[START] ${source} reply error:`, replyError);
+    }
+  }
+}
+
 export function registerUserHandlers(bot) {
   bot.on('bot_started', async ctx => {
-    await entryPoint(ctx);
+    await handleStart(ctx, 'bot_started');
   });
 
   bot.command('start', async ctx => {
-    await entryPoint(ctx);
+    await handleStart(ctx, '/start');
   });
 
   bot.command('menu', async ctx => {

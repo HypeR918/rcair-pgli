@@ -191,39 +191,77 @@ export async function pollUserTickets(bot) {
 
   ticketPollingInProgress = true;
 
+  const startedAt = Date.now();
+  let afterId = 0;
+  let upToId = null;
+  let scannedCount = 0;
+  let batchCount = 0;
+  let errorCount = 0;
+
   try {
-    const tickets = await getActiveBotUserTickets(50);
+    console.log('[TICKET_POLLING] Cycle started');
 
-    for (const localTicket of tickets) {
-      const ticketId = Number(localTicket.glpi_ticket_id || 0);
+    while (true) {
+      const tickets = await getActiveBotUserTickets(50, afterId, upToId);
 
-      if (!ticketId) {
-        continue;
+      if (tickets.length === 0) {
+        break;
       }
 
-      try {
-        const ticket = await getGlpiTicket(ticketId);
-        const status = Number(ticket.status || 0);
+      if (upToId === null) {
+        upToId = Number(tickets[0].polling_max_id);
+      }
 
-        await ensureBotUserTicket(localTicket.max_id, ticketId);
+      const nextAfterId = Number(tickets[tickets.length - 1].id);
 
-        await notifySolutionIfNeeded(bot, localTicket, ticketId, status);
-        await notifyClosedIfNeeded(bot, localTicket, ticketId, status);
-        await notifyNewFollowups(bot, localTicket, ticketId, status);
-      } catch (err) {
-        if (isGlpiTicketNotFoundError(err)) {
-          await deleteBotUserTicketByTicketId(ticketId);
-          console.log('Deleted unavailable local ticket:', ticketId);
+      if (!Number.isSafeInteger(upToId)
+          || !Number.isSafeInteger(nextAfterId)
+          || nextAfterId <= afterId
+          || nextAfterId > upToId) {
+        throw new Error('Invalid ticket polling pagination cursor');
+      }
+
+      // Advance by the stable row ID, not OFFSET: deletions cannot skip a page.
+      afterId = nextAfterId;
+      scannedCount += tickets.length;
+      batchCount += 1;
+
+      for (const localTicket of tickets) {
+        const ticketId = Number(localTicket.glpi_ticket_id || 0);
+
+        if (!ticketId) {
           continue;
         }
 
-        console.error(
-          'pollUserTickets item error:',
-          localTicket.glpi_ticket_id,
-          err.message
-        );
+        try {
+          const ticket = await getGlpiTicket(ticketId);
+          const status = Number(ticket.status || 0);
+
+          await ensureBotUserTicket(localTicket.max_id, ticketId);
+
+          await notifySolutionIfNeeded(bot, localTicket, ticketId, status);
+          await notifyClosedIfNeeded(bot, localTicket, ticketId, status);
+          await notifyNewFollowups(bot, localTicket, ticketId, status);
+        } catch (err) {
+          if (isGlpiTicketNotFoundError(err)) {
+            await deleteBotUserTicketByTicketId(ticketId);
+            console.log('Deleted unavailable local ticket:', ticketId);
+            continue;
+          }
+
+          errorCount += 1;
+          console.error(
+            'pollUserTickets item error:',
+            localTicket.glpi_ticket_id,
+            err.message
+          );
+        }
       }
     }
+
+    console.log(
+      `[TICKET_POLLING] Cycle complete: rows=${scannedCount}, batches=${batchCount}, errors=${errorCount}, duration_ms=${Date.now() - startedAt}`
+    );
   } catch (err) {
     console.error('pollUserTickets error:', err.message);
   } finally {
