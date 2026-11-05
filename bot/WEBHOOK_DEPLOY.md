@@ -149,6 +149,15 @@ sudo docker exec -i max_bot node scripts/diagnose-webhook.mjs --watch 30
 Настоящую доставку показывает отдельное число событий за окно наблюдения.
 Итоги и пределы проверки — [WEBHOOK_AUDIT.md](WEBHOOK_AUDIT.md).
 
+Новые сообщения из webhook подсчитываются отдельно: attempted/confirmed/failed.
+`confirmed` требует ответа MAX с `message.body.mid`, но не подтверждает прочтение.
+Выводятся последние пять из 20 завершённых настоящих событий: статус, результат,
+длительность и счётчики ответов. Пробы не вытесняют историю. Фоновые уведомления,
+editMessage и answerOnCallback в эти счётчики не входят. `processed` без нового
+ответа возможен при раннем return; дубликат имеет отдельный `result=duplicate`.
+После повторного молчания соберите `--watch 0` до перезапуска контейнера.
+Сравнение с Python-ботами и порядок работы — [WEBHOOK_COMPARISON.md](WEBHOOK_COMPARISON.md).
+
 Основной бот получает события MAX только через webhook. В нём нет запуска long polling
 MAX или автоматического возврата к `/updates`. SDK-методы `bot.start()`,
 `bot.api.getUpdates()`, `bot.api.raw.subscriptions.getUpdates()` и обычный raw GET

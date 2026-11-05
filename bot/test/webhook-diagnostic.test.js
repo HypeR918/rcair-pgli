@@ -77,6 +77,8 @@ test('диагностика проверяет подписку, настоящ
   assert.equal(result.nginx_status, 200);
   assert.equal(result.snapshot.ignored, 2);
   assert.equal(result.snapshot.types.message_created, 0);
+  assert.deepEqual(result.snapshot.replies, { attempted: 0, confirmed: 0, failed: 0 });
+  assert.deepEqual(result.snapshot.recent_events, []);
   assert.equal(f.getHandlers(), 0);
   assert.deepEqual(f.apiCalls, [{ method: 'GET', path: '/me' }, { method: 'GET', path: '/subscriptions' }]);
   const output = f.output.join('\n');

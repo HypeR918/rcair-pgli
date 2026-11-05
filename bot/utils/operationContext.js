@@ -2,8 +2,8 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 
 const storage = new AsyncLocalStorage();
 
-export function createOperationScope(report) {
-  const state = { phase: 'handler', failures: new Map(), terminal: null, report };
+export function createOperationScope(report, reportReply = () => {}) {
+  const state = { phase: 'handler', failures: new Map(), terminal: null, report, reportReply };
   return {
     run: action => storage.run(state, async () => {
       try { return await withOperation('handler', action); }
@@ -11,6 +11,11 @@ export function createOperationScope(report) {
     }),
     get failedPhase() { return state.terminal ? state.failures.get(state.terminal.error) ?? null : null; },
   };
+}
+
+// Только исход отправки; текст, адресат и ответ MAX в диагностику не передаются.
+export function recordMaxReply(result) {
+  storage.getStore()?.reportReply(result);
 }
 
 export async function withOperation(phase, action) {

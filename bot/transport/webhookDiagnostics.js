@@ -7,6 +7,8 @@ export function createWebhookDiagnostics(logger) {
   const active = new Map();
   const counts = { received: 0, authorized: 0, processed: 0, duplicate: 0, ignored: 0, rejected: 0, failed: 0 };
   const types = Object.fromEntries([...MAX_UPDATE_TYPES, 'unsupported'].map(type => [type, 0]));
+  const replies = { attempted: 0, confirmed: 0, failed: 0 };
+  const recent = [];
   let lastReceived = null;
   let lastCompleted = null;
   const log = data => logger.log('[MAX_WEBHOOK]', JSON.stringify(data));
@@ -14,7 +16,10 @@ export function createWebhookDiagnostics(logger) {
     begin() {
       const event = ++counts.received;
       const now = Date.now();
-      active.set(event, { startedAt: now, phase: 'http.authorization', phaseStartedAt: now });
+      active.set(event, {
+        startedAt: now, phase: 'http.authorization', phaseStartedAt: now,
+        replies: { attempted: 0, confirmed: 0, failed: 0 },
+      });
       lastReceived = new Date(now).toISOString();
       log({ event, stage: 'request' });
       return event;
@@ -29,7 +34,15 @@ export function createWebhookDiagnostics(logger) {
     },
     received(event, metadata) {
       types[metadata.type]++;
+      active.get(event).metadata = metadata;
       log({ event, stage: 'received', ...metadata });
+    },
+    reply(event, result) {
+      const entry = active.get(event);
+      if (!entry) return;
+      entry.replies[result]++;
+      replies[result]++;
+      log({ event, stage: 'reply', result });
     },
     finish(event, { status, result, reason, phase }) {
       const now = Date.now();
@@ -41,8 +54,17 @@ export function createWebhookDiagnostics(logger) {
       if (stage === 'rejected') counts.rejected++;
       else if (stage === 'failed') counts.failed++;
       else counts[result]++;
+      const summary = {
+        event, ...(entry.metadata && entry.metadata), status, ...(result && { result }),
+        ...(stage === 'failed' && { phase: phase || entry.phase }), duration_ms,
+        replies: { ...entry.replies },
+      };
+      if (MAX_UPDATE_TYPES.includes(entry.metadata?.type)) {
+        recent.push({ ...summary, completed_at: lastCompleted });
+        if (recent.length > 20) recent.shift();
+      }
       log({ event, stage, status, ...(result && { result }), ...(reason && { reason }),
-        ...(stage === 'failed' && { phase: phase || entry.phase }), duration_ms });
+        ...(stage === 'failed' && { phase: phase || entry.phase }), duration_ms, replies: { ...entry.replies } });
     },
     snapshot() {
       const now = Date.now();
@@ -54,6 +76,7 @@ export function createWebhookDiagnostics(logger) {
       }
       return {
         ...counts, instance_id: instanceId, types: { ...types }, active: active.size,
+        replies: { ...replies }, recent_events: recent.map(entry => ({ ...entry, replies: { ...entry.replies } })),
         oldest_active_ms: oldest ? now - oldest.startedAt : 0,
         oldest_phase: oldest?.phase ?? null, oldest_phase_ms: oldest ? now - oldest.phaseStartedAt : 0,
         active_phases: phases,

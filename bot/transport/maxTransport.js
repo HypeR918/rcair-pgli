@@ -120,7 +120,10 @@ export async function startMaxTransport(bot, config, options = {}) {
         type: supported ? update.update_type : 'unsupported',
         start, has_user: Boolean(ctx?.user?.user_id),
       });
-      operation = createOperationScope(phase => diagnostics.setPhase(event, phase));
+      operation = createOperationScope(
+        phase => diagnostics.setPhase(event, phase),
+        result => diagnostics.reply(event, result),
+      );
       const result = supported ? await operation.run(() => dispatch(ctx)) : 'ignored';
       const body = { ok: true };
       if (update.update_type === 'diagnostic_probe'

@@ -48,6 +48,7 @@ async function fixture(t, setup = bot => bot.command('start', ctx => ctx.reply('
     const body = JSON.parse(Buffer.concat(chunks).toString());
     replies.push({ body, query: new URL(req.url, 'http://fixture').searchParams });
     if (mode === 'reject') { res.writeHead(503); return res.end('{"message":"offline failure"}'); }
+    if (mode === 'unconfirmed') return res.end('{"success":false,"message":"private response"}');
     if (replies.length === 1 && mode.startsWith('hang')) {
       res.on('close', firstClosed);
       if (mode === 'hang-body') { res.writeHead(200); res.write('{"message":'); }
@@ -92,6 +93,41 @@ async function deadline(promise, label) {
   return result;
 }
 
+test('HTTP 200 без сообщения MAX не подтверждает ответ и не подавляет повтор события', async t => {
+  const f = await fixture(t);
+  const update = message('unconfirmed.reply');
+  f.setMode('unconfirmed');
+  assert.equal(await f.deliver(update), 500, 'Пустое подтверждение MAX ошибочно считается доставленным ответом');
+  f.setMode('normal');
+  assert.equal(await f.deliver(update), 200);
+  assert.equal(await f.deliver(update), 200);
+  assert.equal(f.replies.length, 2, 'Ошибка не должна попасть в дедупликацию, успех — должен');
+  assert(!JSON.stringify(f.records).includes('private response'));
+});
+
+test('диагностика связывает событие с подтверждением MAX, а обработку без ответа показывает отдельно', async t => {
+  const f = await fixture(t, bot => bot.on('message_created', async ctx => {
+    if (ctx.message.body.text === '/start') await ctx.reply('Тестовое меню');
+  }));
+  assert.equal(await f.deliver(message('reply.confirmed')), 200);
+  assert.equal(await f.deliver(message('reply.none', 'Текст без ответа')), 200);
+  f.setMode('unconfirmed');
+  assert.equal(await f.deliver(message('reply.failed')), 500);
+  const snapshot = await (await fetch(`${f.base}/diagnostics`)).json();
+  assert.deepEqual(snapshot.replies, { attempted: 2, confirmed: 1, failed: 1 });
+  assert.deepEqual(snapshot.recent_events.map(event => [event.type, event.status, event.replies]), [
+    ['message_created', 200, { attempted: 1, confirmed: 1, failed: 0 }],
+    ['message_created', 200, { attempted: 0, confirmed: 0, failed: 0 }],
+    ['message_created', 500, { attempted: 1, confirmed: 0, failed: 1 }],
+  ]);
+  const completed = f.records.filter(record => ['finished', 'failed'].includes(record.stage));
+  assert.deepEqual(completed.map(record => record.replies), snapshot.recent_events.map(event => event.replies));
+  const output = JSON.stringify(snapshot) + JSON.stringify(f.records);
+  for (const secret of ['private response', 'Тестовое меню', 'Текст без ответа', config.BOT_TOKEN, config.WEBHOOK_SECRET]) {
+    assert(!output.includes(secret));
+  }
+});
+
 for (const mode of ['hang-headers', 'hang-body']) {
   test(`${mode}: SDK отменяет HTTP, освобождает диалог; другой пользователь не блокируется`, async t => {
     const f = await fixture(t);
@@ -105,8 +141,27 @@ for (const mode of ['hang-headers', 'hang-body']) {
     await deadline(f.closed, 'Исходящий HTTP-сокет не закрыт');
     assert.equal(await deadline(second, 'Следующее сообщение пользователя заблокировано'), 200);
     assert.equal(f.replies.length, 3);
+    const snapshot = await (await fetch(`${f.base}/diagnostics`)).json();
+    assert.deepEqual(snapshot.replies, { attempted: 3, confirmed: 2, failed: 1 });
+    assert.deepEqual(snapshot.recent_events.sort((a, b) => a.event - b.event).map(event => event.replies), [
+      { attempted: 1, confirmed: 0, failed: 1 },
+      { attempted: 1, confirmed: 1, failed: 0 },
+      { attempted: 1, confirmed: 1, failed: 0 },
+    ], 'Параллельные диалоги не должны смешивать подтверждения ответов');
   });
 }
+
+test('история хранит последние 20 реальных событий, диагностические пробы её не вытесняют', async t => {
+  const f = await fixture(t);
+  for (let i = 0; i < 25; i++) assert.equal(await f.deliver(message(`history.${i}`, 'Без ответа')), 200);
+  assert.equal(await f.deliver({ update_type: 'diagnostic_probe', timestamp: 1 }), 200);
+  const snapshot = await (await fetch(`${f.base}/diagnostics`)).json();
+  assert.equal(snapshot.received, 26);
+  assert.equal(snapshot.recent_events.length, 20);
+  assert.equal(snapshot.recent_events[0].event, 6);
+  assert.equal(snapshot.recent_events.at(-1).event, 25);
+  assert(snapshot.recent_events.every(event => event.type === 'message_created'));
+});
 
 test('диагностика различает зависший MAX API и очередь следующего сообщения', async t => {
   const f = await fixture(t, undefined, 500);
