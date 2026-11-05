@@ -66,6 +66,7 @@ export async function startMaxTransport(bot, config, options = {}) {
   if (!bot.botInfo?.user_id) throw new Error('MAX не подтвердил учётную запись бота');
 
   let ready = false;
+  let accepting = false;
   const dispatch = createDispatcher(bot);
   const diagnostics = createWebhookDiagnostics(logger);
   const server = http.createServer(async (req, res) => {
@@ -100,10 +101,10 @@ export async function startMaxTransport(bot, config, options = {}) {
       return;
     }
     diagnostics.authorize();
-    if (!ready) {
+    if (!accepting) {
       req.resume();
       reply(res, 503, { ok: false });
-      diagnostics.finish(event, { status: 503, reason: 'not_ready' });
+      diagnostics.finish(event, { status: 503, reason: 'stopping' });
       return;
     }
     let operation;
@@ -142,6 +143,7 @@ export async function startMaxTransport(bot, config, options = {}) {
 
   async function stop() {
     ready = false;
+    accepting = false;
     if (!server.listening) return;
     const deadline = setTimeout(() => server.closeAllConnections(), 15000);
     deadline.unref();
@@ -153,6 +155,9 @@ export async function startMaxTransport(bot, config, options = {}) {
     await new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(options.port ?? config.PORT, options.host || '0.0.0.0', () => {
+        // Обработчики/БД уже подготовлены. Действующая подписка может прислать
+        // событие, пока API ещё отвечает на повторную регистрацию.
+        accepting = true;
         server.off('error', reject);
         resolve();
       });

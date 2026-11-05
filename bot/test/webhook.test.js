@@ -331,6 +331,40 @@ test('неподтверждённая подписка закрывает liste
   await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
 });
 
+test('валидное событие принимается во время регистрации подписки, readiness остаётся 503 до подтверждения', async t => {
+  const probe = http.createServer();
+  probe.listen(0, '127.0.0.1'); await once(probe, 'listening');
+  const port = probe.address().port;
+  await new Promise(resolve => probe.close(resolve));
+  const base = `http://127.0.0.1:${port}`;
+  const bot = createWebhookBot('offline');
+  let handled = 0;
+  bot.command('start', () => { handled++; });
+  const update = payload('arrived-during-registration');
+  const deliver = secret => fetch(`${base}/max/callback/`, {
+    method: 'POST', headers: {
+      'Content-Type': 'application/json', 'X-Max-Bot-Api-Secret': secret,
+    }, body: JSON.stringify(update), signal: AbortSignal.timeout(1000),
+  });
+  const api = async (method, path) => {
+    if (path === '/me') return { user_id: 999 };
+    if (method === 'GET') return { subscriptions: [{ url: config.WEBHOOK_URL }] };
+    assert.equal((await fetch(`${base}/health`)).status, 503);
+    assert.equal((await deliver('wrong-secret')).status, 403);
+    assert.equal(handled, 0);
+    const response = await deliver(config.WEBHOOK_SECRET);
+    assert.equal(response.status, 200, 'Подписка уже может доставлять события до ответа API регистрации');
+    await response.text();
+    assert.equal(handled, 1);
+    return { success: true };
+  };
+  const transport = await startMaxTransport(bot, config, { api, logger, port, host: '127.0.0.1' });
+  t.after(() => transport.stop());
+  assert.equal((await fetch(`${base}/health`)).status, 200);
+  assert.equal((await deliver(config.WEBHOOK_SECRET)).status, 200);
+  assert.equal(handled, 1, 'Повтор после подтверждения регистрации не должен исполняться заново');
+});
+
 test('webhook по умолчанию останавливает HTTP-сервер без lifecycle polling SDK', async () => {
   const bot = createWebhookBot('offline');
   bot.stop = () => { throw new Error('SDK polling lifecycle не должен вызываться'); };
