@@ -16,15 +16,17 @@
 - `axios` (+ `form-data`) — GLPI REST API, скачивание вложений из MAX, вызовы importer'а.
 - `nodemailer` — отправка кодов верификации email по SMTP.
 - `dotenv` — конфигурация через `.env`.
-- Тестового фреймворка, линтера и форматтера в проекте **нет**.
+- Тесты — встроенный `node:test`; внешнего тестового фреймворка, линтера и форматтера нет.
 
 ## Структура проекта
 
 ```
 index.js                  — точка входа: создание Bot, регистрация хендлеров,
-                            запуск polling'ов, health-сервер /health на PORT (3000),
+                            запуск транспорта MAX и GLPI polling'ов, /health на PORT (3000),
                             graceful shutdown (SIGINT/SIGTERM, killSession GLPI, closeDb)
 config/env.js             — чтение .env, requireEnv() проверяет обязательные переменные
+transport/                — MAX polling/webhook, проверка секрета, HTTP и подписки
+WEBHOOK_DEPLOY.md          — запуск webhook на botsupport.gov70.ru, проверки и Nginx
 controllers/
   userController.js       — вход: /start, /menu, bot_started; email-верификация, блокировка
   messageController.js    — единый роутер message_created: диспетчеризация по State сессии
@@ -67,7 +69,7 @@ query_db.py               — посторонняя dev-утилита, к бо
 
 Полные sequence-диаграммы — в `ARCHITECTURE.md`. Кратко:
 
-1. **Транспорт**: бот опрашивает MAX API long polling'ом через SDK; исходящие сообщения — `ctx.reply` / `bot.api.sendMessageToUser`. Базовый URL API зашит в `index.js`: `https://platform-api2.max.ru`.
+1. **Транспорт**: `BOT_TRANSPORT=polling` (по умолчанию) или `webhook`. В webhook нужны `WEBHOOK_URL` и `WEBHOOK_SECRET`; маршрут берётся из URL. Исходящие сообщения — `ctx.reply` / `bot.api.sendMessageToUser`; API — `https://platform-api2.max.ru`. GLPI polling работает при обоих транспортах. Подробности — `WEBHOOK_DEPLOY.md`.
 2. **Сессии**: конечный автомат на пользователя (ключ — `max_id`). Состояния перечислены в `utils/constants.js` (`State.*`). `messageController` читает `session.state` и передаёт управление нужному контроллеру. Сессии кэшируются в памяти и дублируются в `bot_sessions` (JSON); перед записью из них вырезаются открытый код верификации и список файлов (`sanitizeForStorage`).
 3. **Авторизация**: `/start` → проверка блокировки → поиск `max_id` в базе → ввод email → (если `EMAIL_VERIFICATION_ENABLED=true`) 6-значный код по SMTP (HMAC-хэш, TTL 10 мин, 3 попытки, затем блокировка MAX ID) → импорт/поиск пользователя в GLPI через importer → привязка `max_id` к `glpi_users`. Если пользователь не найден — запускается диалог СДС.
 4. **Заявки**: тема → описание → файлы → подтверждение → `POST /Ticket` в GLPI → документы через `POST /Document` + `POST /Document_Item`. Все пишущие запросы к GLPI идут с `?session_write=true` (это делает `glpiApiRequest` автоматически).
@@ -89,13 +91,13 @@ docker build -t max-bot .   # прод-образ
 docker run --env-file .env -p 3000:3000 max-bot
 ```
 
-Проверка живости: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot"}`.
+Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot","transport":"polling"}` (или `webhook`). До подтверждённого старта возвращается `503`; это не проверка внешней доставки.
 
 `npm start` запускает `index.js`. Перед развёртыванием прочитайте `SECURITY_CHANGES.md`: там описаны настройки вложений, лимиты, повторная обработка СДС и миграция `bot_verification_limits`.
 
 ## Тестирование
 
-`npm test` запускает регрессионные проверки через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны.
+`DOTENV_CONFIG_PATH=/dev/null npm test` запускает регрессионные проверки без чтения `.env` через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны. Webhook-тесты поднимают локальный HTTP-сервер и используют настоящий SDK с подменой внешних сервисов.
 
 Интеграционный тест MariaDB пропускается без `RCAIR_TEST_DB_PORT`. Для него нужна отдельная временная MariaDB 11.4 на `127.0.0.1` с пустым паролем root; тест создаёт и удаляет уникальную БД `rcair_test_*`. Запуск: `RCAIR_TEST_DB_PORT=<порт> npm test`. Не используйте рабочую БД.
 
@@ -108,6 +110,8 @@ docker run --env-file .env -p 3000:3000 max-bot
 Основные опциональные (значения по умолчанию в `config/env.js`): `PORT` (3000), `EMAIL_VERIFICATION_ENABLED` (false), `SMTP_*`, `GLPI_API_APP_TOKEN`, `GLPI_ENTITY_ID`, `GLPI_DEFAULT_TICKET_TYPE` / `..._REQUEST_TYPE_ID` / `..._REQUEST_CATEGORY_ID` / `..._ASSIGN_GROUP_ID`, `GLPI_APPROVAL_POLL_MS` и `GLPI_TICKET_POLL_MS` (оба 60000), `EMAIL_CODE_*` (TTL 10 мин, 3 попытки, cooldown 60 сек), `GLPI_IMPORT_*` (таймаут 130 сек, 10 проверок с шагом 1.5 сек), `TEMP_UPLOAD_DIR`, `MAX_ATTACHMENT_BYTES` (20 МБ). Для importer'а: `IMPORTER_HOST`/`IMPORTER_PORT`, `GLPI_DOCKER_CONTAINER` (glpi), `GLPI_CONTAINER_USER`, `GLPI_CONSOLE_PATH`, `GLPI_LDAP_FILTER_ATTRIBUTE` (mail).
 
 `BOT_DB_*` и `GLPI_DB_*` при отсутствии наследуются от общих `DB_*`.
+
+Для webhook: `BOT_TRANSPORT=webhook`, `WEBHOOK_URL=https://botsupport.gov70.ru/max/callback/`, `WEBHOOK_SECRET` (отдельный секрет MAX, 5–256 символов `[A-Za-z0-9_-]`). Секреты не логировать. HTTPS завершается на Nginx; Node слушает HTTP на `PORT`. Чужие подписки не удаляются автоматически; polling с активным webhook запрещён.
 
 ## База данных
 

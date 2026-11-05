@@ -259,7 +259,7 @@ export async function pollUserTickets(bot) {
 }
 
 export function startTicketPolling(bot, intervalMs) {
-  setInterval(() => {
+  const timer = setInterval(() => {
     pollUserTickets(bot).catch(err => {
       console.error('ticket polling fatal error:', err.message);
     });
@@ -268,4 +268,5 @@ export function startTicketPolling(bot, intervalMs) {
   pollUserTickets(bot).catch(err => {
     console.error('ticket polling startup error:', err.message);
   });
+  return timer;
 }

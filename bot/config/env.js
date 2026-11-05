@@ -1,9 +1,13 @@
 import 'dotenv/config';
+import { validateTransportConfig } from '../transport/config.js';
 
 export const env = {
   BOT_TOKEN: process.env.BOT_TOKEN,
 
   PORT: Number(process.env.PORT || 3000),
+  BOT_TRANSPORT: process.env.BOT_TRANSPORT || 'polling',
+  WEBHOOK_URL: process.env.WEBHOOK_URL?.trim() || '',
+  WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
 
   DB_HOST: process.env.DB_HOST,
   DB_PORT: Number(process.env.DB_PORT || 3306),
@@ -60,6 +64,7 @@ export const env = {
 };
 
 export function requireEnv() {
+  validateTransportConfig(env);
   if (!Number.isSafeInteger(env.GLPI_API_TIMEOUT_MS) || env.GLPI_API_TIMEOUT_MS < 1000
       || !Number.isSafeInteger(env.EMAIL_CODE_RESEND_COOLDOWN_MS) || env.EMAIL_CODE_RESEND_COOLDOWN_MS < 1000) {
     throw new Error('Некорректные таймауты API или отправки кодов');

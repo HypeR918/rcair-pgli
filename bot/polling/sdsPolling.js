@@ -93,7 +93,7 @@ export async function pollPendingSdsRequests(bot) {
 }
 
 export function startSdsPolling(bot, intervalMs) {
-  setInterval(() => {
+  const timer = setInterval(() => {
     pollPendingSdsRequests(bot).catch(err => {
       console.error('registration polling fatal error:', err.message);
     });
@@ -102,4 +102,5 @@ export function startSdsPolling(bot, intervalMs) {
   pollPendingSdsRequests(bot).catch(err => {
     console.error('registration polling startup error:', err.message);
   });
+  return timer;
 }

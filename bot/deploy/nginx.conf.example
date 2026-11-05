@@ -1,0 +1,33 @@
+# Итоговый конфиг после установки сертификата; Nginx работает на хосте бота.
+# Замените пути сертификата и ключа перед включением.
+server {
+    listen 80;
+    server_name botsupport.gov70.ru;
+    return 301 https://botsupport.gov70.ru$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name botsupport.gov70.ru;
+
+    ssl_certificate /etc/nginx/tls/botsupport.gov70.ru/fullchain.pem;
+    ssl_certificate_key /etc/nginx/tls/botsupport.gov70.ru/privkey.pem;
+    ssl_protocols TLSv1.2 TLSv1.3;
+
+    client_max_body_size 1m;
+
+    location = /max/callback/ {
+        limit_except POST { deny all; }
+        proxy_pass http://127.0.0.1:3000;
+        proxy_http_version 1.1;
+        proxy_set_header Connection "";
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_connect_timeout 5s;
+        proxy_read_timeout 180s;
+        proxy_next_upstream off;
+    }
+
+    location / { return 404; }
+}

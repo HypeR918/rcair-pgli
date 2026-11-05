@@ -1,7 +1,9 @@
+import process from 'node:process';
 import { Bot } from '@maxhub/max-bot-api';
-import http from 'node:http';
 import { serializeUserUpdates } from './utils/userUpdates.js';
 import { startAttachmentCleanup } from './services/maxFileService.js';
+import { MAX_API_URL } from './transport/config.js';
+import { startMaxTransport } from './transport/maxTransport.js';
 
 import { env, requireEnv } from './config/env.js';
 
@@ -38,7 +40,7 @@ requireEnv();
 
 const bot = new Bot(env.BOT_TOKEN, {
   clientOptions: {
-    baseUrl: 'https://platform-api2.max.ru',
+    baseUrl: MAX_API_URL,
   },
 });
 
@@ -49,57 +51,23 @@ bot.catch(async (error, ctx) => {
   try { await ctx.reply('Ошибка обработки запроса. Попробуйте позже.'); } catch {}
 });
 
-function startHealthServer() {
-  const server = http.createServer((req, res) => {
-    if (req.method === 'GET' && req.url === '/health') {
-      res.writeHead(200, {
-        'Content-Type': 'application/json; charset=utf-8',
-      });
-
-      res.end(
-        JSON.stringify({
-          ok: true,
-          service: 'max-bot',
-        })
-      );
-
-      return;
-    }
-
-    res.writeHead(404, {
-      'Content-Type': 'text/plain; charset=utf-8',
-    });
-
-    res.end('Not found');
-  });
-
-  server.listen(env.PORT, () => {
-    console.log(`Healthcheck: http://localhost:${env.PORT}/health`);
-  });
-
-  return server;
-}
+let transport;
+const timers = [];
 
 async function startApp() {
   console.log('Запуск MAX-бота...');
 
   await ensureDatabaseSchema();
   await loadAllSessions();
-  await startAttachmentCleanup();
+  timers.push(await startAttachmentCleanup());
 
   registerUserHandlers(bot);
   registerMessageHandler(bot);
   registerTicketActions(bot);
 
-  bot.start().catch(error => {
-    console.error('Bot polling fatal error:', error);
-    process.exit(1);
-  });
-
-  startSdsPolling(bot, env.GLPI_APPROVAL_POLL_MS);
-  startTicketPolling(bot, env.GLPI_TICKET_POLL_MS);
-
-  startHealthServer();
+  transport = await startMaxTransport(bot, env);
+  timers.push(startSdsPolling(bot, env.GLPI_APPROVAL_POLL_MS));
+  timers.push(startTicketPolling(bot, env.GLPI_TICKET_POLL_MS));
 
   console.log('Бот запущен.');
   console.log('Email verification enabled:', env.EMAIL_VERIFICATION_ENABLED);
@@ -112,8 +80,13 @@ startApp().catch(error => {
   process.exit(1);
 });
 
+let shuttingDown = false;
 async function shutdown() {
+  if (shuttingDown) return;
+  shuttingDown = true;
   console.log('Завершение работы...');
+  for (const timer of timers) clearInterval(timer);
+  await transport?.stop();
 
   try {
     const { killCurrentSession } = await import('./services/glpiService.js');

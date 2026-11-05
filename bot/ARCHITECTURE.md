@@ -21,7 +21,8 @@ flowchart TB
     IMPORTER[glpi-importer.js<br/>порт 3100]
 
     U <-->|сообщения, кнопки, файлы| MAX
-    MAX <-->|long polling /updates| BOT
+    MAX -->|webhook /max/callback/ через HTTPS-прокси| BOT
+    BOT -->|MAX API: ответы и подписка| MAX
     BOT <-->|SQL 127.0.0.1:3307| BOT_DB
     BOT <-->|HTTP API + polling 5s/60s| GLPI_API
     BOT -->|POST /internal/import-ldap-user| IMPORTER
