@@ -1,11 +1,17 @@
 import crypto from 'node:crypto';
 import nodemailer from 'nodemailer';
 import { env } from '../config/env.js';
+import { withOperation } from '../utils/operationContext.js';
 
+const smtpPort = Number(env.SMTP_PORT || 587);
+const smtpTimeout = env.SMTP_TIMEOUT_MS ?? 10000;
 const emailTransporter = nodemailer.createTransport({
   host: env.SMTP_HOST,
-  port: env.SMTP_PORT,
-  secure: env.SMTP_PORT === 465,
+  port: smtpPort,
+  secure: smtpPort === 465,
+  connectionTimeout: smtpTimeout,
+  greetingTimeout: smtpTimeout,
+  socketTimeout: smtpTimeout,
   ...(env.SMTP_USER ? { auth: { user: env.SMTP_USER, pass: env.SMTP_PASS } } : {}),
 });
 
@@ -42,19 +48,17 @@ export async function sendEmailVerificationCode(email, code) {
     return;
   }
 
-  try {
-    await emailTransporter.sendMail({
-      from: env.SMTP_FROM,
-      to: email,
-      subject: 'Код подтверждения email',
-      text: `Ваш код подтверждения: ${code}`,
-    });
-  } catch (error) {
-    console.error(
-      'sendEmailVerificationCode error:',
-      error.message
-    );
-
-    throw new Error('Не удалось отправить код подтверждения');
-  }
+  return withOperation('smtp.send', async () => {
+    try {
+      await emailTransporter.sendMail({
+        from: env.SMTP_FROM,
+        to: email,
+        subject: 'Код подтверждения email',
+        text: `Ваш код подтверждения: ${code}`,
+      });
+    } catch (error) {
+      console.error('sendEmailVerificationCode error:', error.message);
+      throw new Error('Не удалось отправить код подтверждения');
+    }
+  });
 }

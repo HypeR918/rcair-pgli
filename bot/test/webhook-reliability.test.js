@@ -28,8 +28,9 @@ function message(mid, text = '/start', userId = 123) {
   };
 }
 
-async function fixture(t, setup = bot => bot.command('start', ctx => ctx.reply('Тестовое меню'))) {
+async function fixture(t, setup = bot => bot.command('start', ctx => ctx.reply('Тестовое меню')), timeout = 80) {
   const replies = [];
+  const records = [];
   let mode = 'normal';
   let firstReceived;
   let firstClosed;
@@ -63,11 +64,13 @@ async function fixture(t, setup = bot => bot.command('start', ctx => ctx.reply('
     await transport?.stop();
   });
   const apiUrl = `http://127.0.0.1:${apiServer.address().port}`;
-  const bot = createWebhookBot(config.BOT_TOKEN, { clientOptions: { baseUrl: apiUrl, timeout: 80 } });
+  const bot = createWebhookBot(config.BOT_TOKEN, { clientOptions: { baseUrl: apiUrl, timeout } });
   bot.use(serializeUserUpdates);
   await setup(bot);
   transport = await startMaxTransport(bot, config, {
-    api: createMaxApi(config.BOT_TOKEN, apiUrl), logger: { log() {}, error() {} },
+    api: createMaxApi(config.BOT_TOKEN, apiUrl), logger: {
+      log(label, data) { if (label === '[MAX_WEBHOOK]') records.push(JSON.parse(data)); }, error() {},
+    },
     host: '127.0.0.1', port: 0,
   });
   const base = `http://127.0.0.1:${transport.server.address().port}`;
@@ -80,7 +83,7 @@ async function fixture(t, setup = bot => bot.command('start', ctx => ctx.reply('
     await response.text();
     return response.status;
   };
-  return { bot, base, deliver, replies, received, closed, setMode: value => { mode = value; } };
+  return { bot, base, deliver, replies, records, received, closed, setMode: value => { mode = value; } };
 }
 
 async function deadline(promise, label) {
@@ -104,6 +107,28 @@ for (const mode of ['hang-headers', 'hang-body']) {
     assert.equal(f.replies.length, 3);
   });
 }
+
+test('диагностика различает зависший MAX API и очередь следующего сообщения', async t => {
+  const f = await fixture(t, undefined, 500);
+  f.setMode('hang-headers');
+  const first = f.deliver(message('phase.first'));
+  await f.received;
+  const second = f.deliver(message('phase.second'));
+  let busy;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    busy = await (await fetch(`${f.base}/diagnostics`)).json();
+    if (busy.active === 2) break;
+    await delay(2);
+  }
+  assert.equal(busy.active, 2);
+  assert.equal(busy.active_phases?.['max.api'], 1);
+  assert.equal(busy.active_phases?.['dialog.wait'], 1);
+  assert.equal(busy.oldest_phase, 'max.api');
+  assert.equal(await deadline(first, 'Первое событие не завершено'), 500);
+  assert.equal(f.records.find(record => record.stage === 'failed')?.phase, 'max.api');
+  assert.equal(await deadline(second, 'Очередь не освобождена'), 200);
+  assert.equal((await (await fetch(`${f.base}/diagnostics`)).json()).active, 0);
+});
 
 function controllerMocks(sessions) {
   return {

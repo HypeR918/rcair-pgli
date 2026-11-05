@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import FormData from 'form-data';
-import axios from 'axios';
+import rawAxios from 'axios';
+import { withOperation } from '../utils/operationContext.js';
 import { env } from '../config/env.js';
 import { GlpiTicketStatus } from '../utils/constants.js';
 import {
@@ -8,6 +9,10 @@ import {
   truncateText,
   parseDecisionText,
 } from '../utils/textUtils.js';
+
+// Этап ожидания без URL, токенов и параметров запроса.
+const axios = (...args) => withOperation('glpi.api', () => rawAxios(...args));
+axios.get = (...args) => withOperation('glpi.api', () => rawAxios.get(...args));
 
 function getGlpiApiBaseUrl() {
   const url = String(env.GLPI_API_URL || '').trim();

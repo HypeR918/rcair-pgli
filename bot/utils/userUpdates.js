@@ -1,4 +1,6 @@
 // SDK обрабатывает обновления параллельно. Диалоги одного пользователя — последовательно.
+import { withOperation } from './operationContext.js';
+
 const pending = new Map();
 export async function serializeUserUpdates(ctx, next) {
   if (!ctx.user?.user_id) return next();
@@ -7,8 +9,8 @@ export async function serializeUserUpdates(ctx, next) {
   let release;
   const current = new Promise(resolve => { release = resolve; });
   pending.set(key, current);
-  await previous;
-  try { return await next(); }
+  await withOperation('dialog.wait', () => previous);
+  try { return await withOperation('dialog.handler', next); }
   finally {
     release();
     if (pending.get(key) === current) pending.delete(key);

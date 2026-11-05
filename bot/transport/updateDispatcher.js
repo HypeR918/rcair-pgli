@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { withOperation } from '../utils/operationContext.js';
 
 const DEDUP_TTL_MS = 10 * 60 * 1000;
 const MAX_RECENT_UPDATES = 10000;
@@ -26,7 +27,7 @@ export function createDispatcher(bot) {
     }
     if (key && completed.has(key)) return 'duplicate';
     if (key && active.has(key)) {
-      await active.get(key);
+      await withOperation('event.duplicate_wait', () => active.get(key));
       return 'duplicate';
     }
 

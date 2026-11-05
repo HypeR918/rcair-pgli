@@ -1,5 +1,6 @@
 import axios from 'axios';
 import { MAX_API_URL, assertWebhookApiPath } from './config.js';
+import { withOperation } from '../utils/operationContext.js';
 
 export const MAX_API_TIMEOUT_MS = 30000;
 
@@ -25,23 +26,25 @@ export function createMaxClient(token, { baseUrl = MAX_API_URL, timeout = MAX_AP
       const params = Object.fromEntries(Object.entries(options.query || {})
         .filter(([, value]) => value !== undefined && value !== null)
         .map(([name, value]) => [name, String(value)]));
-      try {
-        const response = await axios({
-          url: url.href, method: httpMethod, params, data: options.body,
-          headers: { Authorization: token },
-          timeout, signal: AbortSignal.timeout(timeout),
-          maxRedirects: 0, validateStatus: () => true,
-          responseType: 'json', transitional: { silentJSONParsing: false },
-        });
-        return { status: response.status, data: response.data };
-      } catch (error) {
-        // Не возвращаем AxiosError: в config находятся токен и текст сообщения.
-        const timedOut = ['ECONNABORTED', 'ETIMEDOUT', 'ERR_CANCELED'].includes(error.code);
-        const reason = timedOut ? `истекло время ожидания (${timeout} мс)` : 'ошибка соединения или ответа';
-        const safe = new Error(`MAX API ${httpMethod} ${method}: ${reason}`);
-        safe.code = timedOut ? 'MAX_API_TIMEOUT' : 'MAX_API_CONNECTION';
-        throw safe;
-      }
+      return withOperation('max.api', async () => {
+        try {
+          const response = await axios({
+            url: url.href, method: httpMethod, params, data: options.body,
+            headers: { Authorization: token },
+            timeout, signal: AbortSignal.timeout(timeout),
+            maxRedirects: 0, validateStatus: () => true,
+            responseType: 'json', transitional: { silentJSONParsing: false },
+          });
+          return { status: response.status, data: response.data };
+        } catch (error) {
+          // Не возвращаем AxiosError: в config находятся токен и текст сообщения.
+          const timedOut = ['ECONNABORTED', 'ETIMEDOUT', 'ERR_CANCELED'].includes(error.code);
+          const reason = timedOut ? `истекло время ожидания (${timeout} мс)` : 'ошибка соединения или ответа';
+          const safe = new Error(`MAX API ${httpMethod} ${method}: ${reason}`);
+          safe.code = timedOut ? 'MAX_API_TIMEOUT' : 'MAX_API_CONNECTION';
+          throw safe;
+        }
+      });
     },
   };
 }

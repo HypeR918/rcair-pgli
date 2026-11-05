@@ -14,6 +14,8 @@ export const env = {
   DB_USER: process.env.DB_USER,
   DB_PASSWORD: process.env.DB_PASSWORD,
   DB_NAME: process.env.DB_NAME,
+  DB_QUERY_TIMEOUT_MS: Number(process.env.DB_QUERY_TIMEOUT_MS || 10000),
+  DB_ACQUIRE_TIMEOUT_MS: Number(process.env.DB_ACQUIRE_TIMEOUT_MS || 3000),
 
   BOT_DB_HOST: process.env.BOT_DB_HOST || process.env.DB_HOST,
   BOT_DB_PORT: Number(process.env.BOT_DB_PORT || process.env.DB_PORT || 3306),
@@ -40,6 +42,7 @@ export const env = {
   SMTP_USER: process.env.SMTP_USER,
   SMTP_PASS: process.env.SMTP_PASS,
   SMTP_FROM: process.env.SMTP_FROM,
+  SMTP_TIMEOUT_MS: Number(process.env.SMTP_TIMEOUT_MS || 10000),
 
   GLPI_IMPORT_URL: process.env.GLPI_IMPORT_URL,
   GLPI_IMPORT_SECRET: process.env.GLPI_IMPORT_SECRET,
@@ -65,6 +68,11 @@ export const env = {
 
 export function requireEnv() {
   validateTransportConfig(env);
+  for (const key of ['DB_QUERY_TIMEOUT_MS', 'DB_ACQUIRE_TIMEOUT_MS', 'SMTP_TIMEOUT_MS']) {
+    if (!Number.isSafeInteger(env[key]) || env[key] < 100 || env[key] > 120000) {
+      throw new Error(`Некорректный таймаут ${key}`);
+    }
+  }
   if (!Number.isSafeInteger(env.GLPI_API_TIMEOUT_MS) || env.GLPI_API_TIMEOUT_MS < 1000
       || !Number.isSafeInteger(env.EMAIL_CODE_RESEND_COOLDOWN_MS) || env.EMAIL_CODE_RESEND_COOLDOWN_MS < 1000) {
     throw new Error('Некорректные таймауты API или отправки кодов');

@@ -1,8 +1,10 @@
-import mysql from 'mysql2/promise';
+import { createDbPool } from './dbPool.js';
 import { env } from '../config/env.js';
 import { normalizeEmail, textHash } from '../utils/textUtils.js';
 
-export const botPool = mysql.createPool({
+const timeouts = { queryTimeoutMs: env.DB_QUERY_TIMEOUT_MS, acquireTimeoutMs: env.DB_ACQUIRE_TIMEOUT_MS };
+
+export const botPool = createDbPool({
   host: env.BOT_DB_HOST,
   port: env.BOT_DB_PORT,
   user: env.BOT_DB_USER,
@@ -11,9 +13,9 @@ export const botPool = mysql.createPool({
   charset: 'utf8mb4',
   waitForConnections: true,
   connectionLimit: 10,
-});
+}, { ...timeouts, name: 'bot' });
 
-export const glpiPool = mysql.createPool({
+export const glpiPool = createDbPool({
   host: env.GLPI_DB_HOST,
   port: env.GLPI_DB_PORT,
   user: env.GLPI_DB_USER,
@@ -22,7 +24,7 @@ export const glpiPool = mysql.createPool({
   charset: 'utf8mb4',
   waitForConnections: true,
   connectionLimit: 10,
-});
+}, { ...timeouts, name: 'glpi' });
 
 export const pool = botPool;
 
@@ -838,7 +840,9 @@ async function withBotTransaction(action) {
     await connection.commit();
     return result;
   } catch (error) {
-    await connection.rollback();
+    try { await connection.rollback(); } catch (rollbackError) {
+      console.warn('Откат транзакции БД не подтверждён:', rollbackError.code || 'UNKNOWN');
+    }
     throw error;
   } finally {
     connection.release();

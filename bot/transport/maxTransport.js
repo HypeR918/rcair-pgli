@@ -5,6 +5,7 @@ import { createMaxApi } from './maxApi.js';
 import { WebhookContext } from './webhookContext.js';
 import { createDispatcher } from './updateDispatcher.js';
 import { createWebhookDiagnostics } from './webhookDiagnostics.js';
+import { createOperationScope } from '../utils/operationContext.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
 
@@ -105,6 +106,8 @@ export async function startMaxTransport(bot, config, options = {}) {
       diagnostics.finish(event, { status: 503, reason: 'not_ready' });
       return;
     }
+    let operation;
+    diagnostics.setPhase(event, 'http.body');
     try {
       const update = await readUpdate(req);
       const supported = MAX_UPDATE_TYPES.includes(update.update_type);
@@ -116,7 +119,8 @@ export async function startMaxTransport(bot, config, options = {}) {
         type: supported ? update.update_type : 'unsupported',
         start, has_user: Boolean(ctx?.user?.user_id),
       });
-      const result = supported ? await dispatch(ctx) : 'ignored';
+      operation = createOperationScope(phase => diagnostics.setPhase(event, phase));
+      const result = supported ? await operation.run(() => dispatch(ctx)) : 'ignored';
       const body = { ok: true };
       if (update.update_type === 'diagnostic_probe'
           && typeof update.probe_id === 'string' && /^[a-f0-9-]{36}$/.test(update.probe_id)) {
@@ -130,7 +134,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       const status = error instanceof WebhookRequestError ? error.status : 500;
       if (status === 500) logger.error('Ошибка MAX webhook:', error.message);
       if (!res.destroyed && !res.headersSent) reply(res, status, { ok: false });
-      diagnostics.finish(event, { status });
+      diagnostics.finish(event, { status, phase: operation?.failedPhase });
     }
   });
   server.requestTimeout = 30000;

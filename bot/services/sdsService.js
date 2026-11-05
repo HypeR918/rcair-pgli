@@ -2,6 +2,7 @@ import axios from 'axios';
 import { env } from '../config/env.js';
 import { normalizeEmail, sleep } from '../utils/textUtils.js';
 import { findGlpiUserAfterSdsImport } from './dbService.js';
+import { withOperation } from '../utils/operationContext.js';
 
 export async function requestGlpiLdapImport(email) {
   const importUrl = String(env.GLPI_IMPORT_URL || '').trim();
@@ -29,7 +30,7 @@ export async function requestGlpiLdapImport(email) {
     console.log('payload:', payload);
     console.log('secret length:', importSecret.length);
 
-    const res = await axios.post(
+    const res = await withOperation('glpi.import', () => axios.post(
       importUrl,
       payload,
       {
@@ -42,7 +43,7 @@ export async function requestGlpiLdapImport(email) {
         validateStatus: () => true,
         transformRequest: data => data,
       }
-    );
+    ));
 
     if (res.status >= 200 && res.status < 300 && res.data?.ok === true) {
       console.log('=== GLPI CLI IMPORT SUCCESS ===');

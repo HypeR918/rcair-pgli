@@ -43,6 +43,7 @@ controllers/
 services/
   dbService.js            — пулы botPool/glpiPool, ensureDatabaseSchema() (автомиграции),
                             вся работа с таблицами бота
+  dbPool.js               — ограничение acquire/команд, удаление зависшего соединения
   glpiService.js          — клиент GLPI REST API: кэш session_token (30 мин), retry на 401,
                             создание/обновление тикетов, followup'ы, решения, документы
   sdsService.js           — импорт пользователя из LDAP через HTTP-вызов glpi-importer'а
@@ -54,6 +55,7 @@ polling/
   sdsPolling.js           — опрос СДС-заявок: разбор решения администратора по ключевым словам
 ui/keyboards.js           — inline-клавиатуры (Keyboard из max-bot-api)
 utils/
+  operationContext.js     — AsyncLocalStorage: этап ожидания и причина конечной ошибки
   constants.js            — State (конечный автомат сессии), GlpiTicketStatus (1..6),
                             approveWords/rejectWords для разбора решений СДС
   textUtils.js            — stripHtml, parseDecisionText, truncateText, textHash и пр.
