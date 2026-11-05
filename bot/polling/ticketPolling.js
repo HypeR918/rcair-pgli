@@ -187,7 +187,7 @@ export async function pollUserTickets(bot) {
   let errorCount = 0;
 
   try {
-    console.log('[TICKET_POLLING] Cycle started');
+    console.log('[GLPI_TICKETS] Cycle started');
 
     while (true) {
       const tickets = await getActiveBotUserTickets(50, afterId, upToId);
@@ -249,7 +249,7 @@ export async function pollUserTickets(bot) {
     }
 
     console.log(
-      `[TICKET_POLLING] Cycle complete: rows=${scannedCount}, batches=${batchCount}, errors=${errorCount}, duration_ms=${Date.now() - startedAt}`
+      `[GLPI_TICKETS] Cycle complete: rows=${scannedCount}, batches=${batchCount}, errors=${errorCount}, duration_ms=${Date.now() - startedAt}`
     );
   } catch (err) {
     console.error('pollUserTickets error:', err.message);

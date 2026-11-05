@@ -5,7 +5,7 @@ export const env = {
   BOT_TOKEN: process.env.BOT_TOKEN,
 
   PORT: Number(process.env.PORT || 3000),
-  BOT_TRANSPORT: process.env.BOT_TRANSPORT || 'polling',
+  BOT_TRANSPORT: process.env.BOT_TRANSPORT || 'webhook',
   WEBHOOK_URL: process.env.WEBHOOK_URL?.trim() || '',
   WEBHOOK_SECRET: process.env.WEBHOOK_SECRET || '',
 

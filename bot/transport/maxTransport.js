@@ -71,7 +71,7 @@ function createDispatcher(bot) {
     const task = Promise.resolve().then(async () => {
       const ctx = new Context(update, bot.api, bot.botInfo);
       // Публичные Context/middleware сохраняют все хендлеры и сериализацию MAX ID.
-      // bot.catch() относится к polling; здесь ошибка должна дать HTTP 500 для retry.
+      // Ошибка передаётся HTTP-транспорту, чтобы MAX мог повторить доставку.
       await bot.middleware()(ctx, () => Promise.resolve());
       if (key) {
         completed.set(key, Date.now());
@@ -95,14 +95,13 @@ export async function startMaxTransport(bot, config, options = {}) {
   if (!Array.isArray(subscriptions?.subscriptions)) {
     throw new Error('MAX не вернул список подписок');
   }
-  if (subscriptions.subscriptions.some(item => transport.mode === 'polling' || item.url !== transport.url)) {
+  if (subscriptions.subscriptions.some(item => item.url !== transport.url)) {
     throw new Error('У бота есть другой webhook. Сначала явно перенесите или удалите старую подписку MAX');
   }
   bot.botInfo = await api('GET', '/me');
   if (!bot.botInfo?.user_id) throw new Error('MAX не подтвердил учётную запись бота');
 
   let ready = false;
-  let stopping = false;
   let sequence = 0;
   const dispatch = createDispatcher(bot);
   const server = http.createServer(async (req, res) => {
@@ -112,7 +111,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       reply(res, ready ? 200 : 503, { ok: ready, service: 'max-bot', transport: transport.mode });
       return;
     }
-    if (transport.mode !== 'webhook' || path !== transport.path) {
+    if (path !== transport.path) {
       req.resume();
       reply(res, 404, { ok: false });
       return;
@@ -171,8 +170,6 @@ export async function startMaxTransport(bot, config, options = {}) {
 
   async function stop() {
     ready = false;
-    stopping = true;
-    if (transport.mode === 'polling') bot.stop();
     if (!server.listening) return;
     const deadline = setTimeout(() => server.closeAllConnections(), 15000);
     deadline.unref();
@@ -189,19 +186,13 @@ export async function startMaxTransport(bot, config, options = {}) {
       });
     });
     server.on('error', onFatal);
-    if (transport.mode === 'webhook') {
-      const result = await api('POST', '/subscriptions', {
-        url: transport.url,
-        update_types: MAX_UPDATE_TYPES,
-        secret: transport.secret,
-      });
-      if (result?.success !== true) throw new Error('MAX не подтвердил регистрацию webhook');
-      logger.log('MAX webhook зарегистрирован:', transport.url);
-    } else {
-      bot.start({ allowedUpdates: MAX_UPDATE_TYPES }).then(() => {
-        if (!stopping) onFatal(new Error('MAX polling неожиданно завершился'));
-      }).catch(error => { if (!stopping) onFatal(error); });
-    }
+    const result = await api('POST', '/subscriptions', {
+      url: transport.url,
+      update_types: MAX_UPDATE_TYPES,
+      secret: transport.secret,
+    });
+    if (result?.success !== true) throw new Error('MAX не подтвердил регистрацию webhook');
+    logger.log('MAX webhook зарегистрирован:', transport.url);
     ready = true;
     logger.log(`HTTP-сервер MAX-бота: порт ${server.address().port}, transport=${transport.mode}`);
     return { server, stop };

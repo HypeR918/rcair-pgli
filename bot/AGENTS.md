@@ -11,7 +11,7 @@
 ## Технологический стек
 
 - Node.js 22 (по Dockerfile), ES-модули (`"type": "module"` в package.json), без транспиляции и шага сборки.
-- `@maxhub/max-bot-api` — SDK бота MAX (long polling, inline-клавиатуры).
+- `@maxhub/max-bot-api` — SDK бота MAX (API, middleware, inline-клавиатуры). Long polling в основном боте запрещён.
 - `mysql2/promise` — два пула соединений: база бота (MariaDB) и база GLPI (MySQL).
 - `axios` (+ `form-data`) — GLPI REST API, скачивание вложений из MAX, вызовы importer'а.
 - `nodemailer` — отправка кодов верификации email по SMTP.
@@ -25,7 +25,8 @@ index.js                  — точка входа: создание Bot, ре�
                             запуск транспорта MAX и GLPI polling'ов, /health на PORT (3000),
                             graceful shutdown (SIGINT/SIGTERM, killSession GLPI, closeDb)
 config/env.js             — чтение .env, requireEnv() проверяет обязательные переменные
-transport/                — MAX polling/webhook, проверка секрета, HTTP и подписки
+transport/                — только MAX webhook, проверка секрета, HTTP и подписки
+  webhookBot.js           — экземпляр SDK с запретом запуска polling и чтения /updates
 WEBHOOK_DEPLOY.md          — запуск webhook на botsupport.gov70.ru, проверки и Nginx
 controllers/
   userController.js       — вход: /start, /menu, bot_started; email-верификация, блокировка
@@ -69,7 +70,7 @@ query_db.py               — посторонняя dev-утилита, к бо
 
 Полные sequence-диаграммы — в `ARCHITECTURE.md`. Кратко:
 
-1. **Транспорт**: `BOT_TRANSPORT=polling` (по умолчанию) или `webhook`. В webhook нужны `WEBHOOK_URL` и `WEBHOOK_SECRET`; маршрут берётся из URL. Исходящие сообщения — `ctx.reply` / `bot.api.sendMessageToUser`; API — `https://platform-api2.max.ru`. GLPI polling работает при обоих транспортах. Подробности — `WEBHOOK_DEPLOY.md`.
+1. **Транспорт**: только `BOT_TRANSPORT=webhook`, он же режим по умолчанию. Нужны `WEBHOOK_URL` и `WEBHOOK_SECRET`; маршрут берётся из URL. `polling` отклоняется, `bot.start()` и SDK-методы чтения `/updates` заблокированы. Исходящие сообщения — `ctx.reply` / `bot.api.sendMessageToUser`; API — `https://platform-api2.max.ru`. Опрос GLPI/SQL не получает события MAX и продолжает работать для уведомлений. Подробности — `WEBHOOK_DEPLOY.md`.
 2. **Сессии**: конечный автомат на пользователя (ключ — `max_id`). Состояния перечислены в `utils/constants.js` (`State.*`). `messageController` читает `session.state` и передаёт управление нужному контроллеру. Сессии кэшируются в памяти и дублируются в `bot_sessions` (JSON); перед записью из них вырезаются открытый код верификации и список файлов (`sanitizeForStorage`).
 3. **Авторизация**: `/start` → проверка блокировки → поиск `max_id` в базе → ввод email → (если `EMAIL_VERIFICATION_ENABLED=true`) 6-значный код по SMTP (HMAC-хэш, TTL 10 мин, 3 попытки, затем блокировка MAX ID) → импорт/поиск пользователя в GLPI через importer → привязка `max_id` к `glpi_users`. Если пользователь не найден — запускается диалог СДС.
 4. **Заявки**: тема → описание → файлы → подтверждение → `POST /Ticket` в GLPI → документы через `POST /Document` + `POST /Document_Item`. Все пишущие запросы к GLPI идут с `?session_write=true` (это делает `glpiApiRequest` автоматически).
@@ -91,13 +92,13 @@ docker build -t max-bot .   # прод-образ
 docker run --env-file .env -p 3000:3000 max-bot
 ```
 
-Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot","transport":"polling"}` (или `webhook`). До подтверждённого старта возвращается `503`; это не проверка внешней доставки.
+Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot","transport":"webhook"}`. До подтверждённого старта возвращается `503`; это не проверка внешней доставки.
 
 `npm start` запускает `index.js`. Перед развёртыванием прочитайте `SECURITY_CHANGES.md`: там описаны настройки вложений, лимиты, повторная обработка СДС и миграция `bot_verification_limits`.
 
 ## Тестирование
 
-`DOTENV_CONFIG_PATH=/dev/null npm test` запускает регрессионные проверки без чтения `.env` через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны. Webhook-тесты поднимают локальный HTTP-сервер и используют настоящий SDK с подменой внешних сервисов.
+`DOTENV_CONFIG_PATH=/dev/null npm test` запускает регрессионные проверки без чтения `.env` через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны. Webhook-тесты поднимают локальный HTTP-сервер и используют настоящий SDK с подменой внешних сервисов. `webhook-only.test.js` проверяет реальные команды, текст, callback, `bot_started`, уведомление и отсутствие запросов `/updates`.
 
 Интеграционный тест MariaDB пропускается без `RCAIR_TEST_DB_PORT`. Для него нужна отдельная временная MariaDB 11.4 на `127.0.0.1` с пустым паролем root; тест создаёт и удаляет уникальную БД `rcair_test_*`. Запуск: `RCAIR_TEST_DB_PORT=<порт> npm test`. Не используйте рабочую БД.
 
@@ -111,7 +112,7 @@ Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot
 
 `BOT_DB_*` и `GLPI_DB_*` при отсутствии наследуются от общих `DB_*`.
 
-Для webhook: `BOT_TRANSPORT=webhook`, `WEBHOOK_URL=https://botsupport.gov70.ru/max/callback/`, `WEBHOOK_SECRET` (отдельный секрет MAX, 5–256 символов `[A-Za-z0-9_-]`). Секреты не логировать. HTTPS завершается на Nginx; Node слушает HTTP на `PORT`. Чужие подписки не удаляются автоматически; polling с активным webhook запрещён.
+Для webhook: `BOT_TRANSPORT=webhook` (другие режимы запрещены), `WEBHOOK_URL=https://botsupport.gov70.ru/max/callback/`, `WEBHOOK_SECRET` (отдельный секрет MAX, 5–256 символов `[A-Za-z0-9_-]`). Секреты не логировать. HTTPS завершается на Nginx; Node слушает HTTP на `PORT`. Чужие подписки не удаляются автоматически; запуска MAX polling нет даже при пустом списке подписок.
 
 ## База данных
 
@@ -124,7 +125,7 @@ Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot
 - Все тексты пользователю — на русском и по возможности из каталога `REPLIKI_BOTA.md`; логи — смесь русского и английского (сохраняйте стиль соседнего кода).
 - Callback-пayload'ы кнопок: префиксы `menu:*` и `ticket:*` (`ticket:open:{id}`, `ticket:rate:{id}:{0-5}` и т.п.); новые действия регистрируйте в `registerTicketActions` через `bot.action`, текстовые состояния — через новый `State.*` и ветку в `messageController`.
 - ID пользователей/тикетов нормализуются в `Number` на границах; функции сервисов бросают `Error` с русским текстом для пользовательских ошибок.
-- При ошибке обработчики отвечают пользователю нейтральным сообщением и логируют детали в `console.error`; фатальные ошибки polling'а не должны ронять процесс (ошибки ловятся внутри циклов).
+- При ошибке обработчики отвечают пользователю нейтральным сообщением и логируют детали в `console.error`; ошибки фоновых проверок GLPI не должны ронять процесс (ловятся внутри циклов). Недоставленный ответ `/start` передаётся HTTP-транспорту как ошибка, если не удалось отправить даже нейтральное сообщение.
 
 ## Безопасность
 

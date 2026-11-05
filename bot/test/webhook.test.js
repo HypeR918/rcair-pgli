@@ -2,7 +2,7 @@ import test from 'node:test';
 import assert from 'node:assert/strict';
 import http from 'node:http';
 import { once } from 'node:events';
-import { Bot } from '@maxhub/max-bot-api';
+import { createWebhookBot } from '../transport/webhookBot.js';
 import { startMaxTransport } from '../transport/maxTransport.js';
 import { createMaxApi } from '../transport/maxApi.js';
 import { MAX_UPDATE_TYPES, validateTransportConfig } from '../transport/config.js';
@@ -28,10 +28,8 @@ function payload(id = 'offline.mid', userId = 123) {
 
 async function fixture(t, setup = () => {}, transportLogger = logger) {
   const calls = [];
-  const bot = new Bot(config.BOT_TOKEN);
+  const bot = createWebhookBot(config.BOT_TOKEN);
   bot.use(serializeUserUpdates);
-  let polling = 0;
-  bot.start = async () => { polling++; };
   setup(bot);
   const api = async (method, path, data) => {
     calls.push({ method, path, data });
@@ -47,14 +45,15 @@ async function fixture(t, setup = () => {}, transportLogger = logger) {
     headers: { 'Content-Type': 'application/json', 'X-Max-Bot-Api-Secret': config.WEBHOOK_SECRET },
     body: JSON.stringify(update), ...extra,
   });
-  return { base, deliver, calls, bot, transport, get polling() { return polling; } };
+  return { base, deliver, calls, bot, transport };
 }
 
 test('webhook требует HTTPS, допустимый секрет и не конфликтует с /health', () => {
   assert.equal(validateTransportConfig(config).path, '/max/callback/');
-  assert.equal(validateTransportConfig({ PORT: 3000 }).mode, 'polling');
+  assert.equal(validateTransportConfig({ ...config, BOT_TRANSPORT: undefined }).mode, 'webhook');
+  assert.throws(() => validateTransportConfig({ PORT: 3000 }), /WEBHOOK_URL/);
   for (const change of [
-    { BOT_TRANSPORT: 'unknown' }, { PORT: 0 }, { PORT: 65536 },
+    { BOT_TRANSPORT: 'unknown' }, { BOT_TRANSPORT: 'polling' }, { PORT: 0 }, { PORT: 65536 },
     { WEBHOOK_URL: '' }, { WEBHOOK_URL: 'http://botsupport.gov70.ru/max/callback/' },
     { WEBHOOK_URL: 'https://user:pass@botsupport.gov70.ru/max/callback/' },
     { WEBHOOK_URL: 'https://botsupport.gov70.ru/health' },
@@ -66,7 +65,8 @@ test('webhook требует HTTPS, допустимый секрет и не к
 
 test('webhook регистрирует адрес, события и секрет; long polling MAX не запускается', async t => {
   const f = await fixture(t);
-  assert.equal(f.polling, 0);
+  await assert.rejects(f.bot.start(), /только webhook/);
+  await assert.rejects(f.bot.api.getUpdates(), /только webhook/);
   assert.deepEqual(f.calls, [
     { method: 'GET', path: '/subscriptions', data: undefined },
     { method: 'GET', path: '/me', data: undefined },
@@ -238,16 +238,21 @@ for (const kind of ['message_created', 'bot_started']) {
   });
 }
 
-test('чужие подписки сохраняются; polling с активным webhook запрещён', async () => {
-  for (const mode of ['webhook', 'polling']) {
-    const calls = [];
-    const api = async (method, path) => {
-      calls.push({ method, path });
-      return { subscriptions: [{ url: 'https://another.example/callback/' }] };
-    };
-    await assert.rejects(startMaxTransport(new Bot('offline'), { ...config, BOT_TRANSPORT: mode }, { api, logger }), /другой webhook/);
-    assert.deepEqual(calls, [{ method: 'GET', path: '/subscriptions' }]);
-  }
+test('чужие подписки сохраняются без удаления', async () => {
+  const calls = [];
+  const api = async (method, path) => {
+    calls.push({ method, path });
+    return { subscriptions: [{ url: 'https://another.example/callback/' }] };
+  };
+  await assert.rejects(startMaxTransport(createWebhookBot('offline'), config, { api, logger }), /другой webhook/);
+  assert.deepEqual(calls, [{ method: 'GET', path: '/subscriptions' }]);
+});
+
+test('BOT_TRANSPORT=polling отклоняется до любых сетевых запросов', async () => {
+  let calls = 0;
+  const api = async () => { calls++; };
+  await assert.rejects(startMaxTransport(createWebhookBot('offline'), { ...config, BOT_TRANSPORT: 'polling' }, { api, logger }), /только BOT_TRANSPORT=webhook/);
+  assert.equal(calls, 0);
 });
 
 test('своя подписка повторно регистрируется без удаления', async t => {
@@ -257,7 +262,7 @@ test('своя подписка повторно регистрируется б
     if (path === '/me') return { user_id: 999 };
     return method === 'GET' ? { subscriptions: [{ url: config.WEBHOOK_URL }] } : { success: true };
   };
-  const transport = await startMaxTransport(new Bot('offline'), config, { api, logger, port: 0, host: '127.0.0.1' });
+  const transport = await startMaxTransport(createWebhookBot('offline'), config, { api, logger, port: 0, host: '127.0.0.1' });
   t.after(() => transport.stop());
   assert.deepEqual(calls, ['GET', 'GET', 'POST']);
 });
@@ -273,30 +278,20 @@ test('неподтверждённая подписка закрывает liste
     assert.equal((await fetch(`http://127.0.0.1:${port}/health`)).status, 503);
     return { success: false };
   };
-  await assert.rejects(startMaxTransport(new Bot('offline'), config, { api, logger, port, host: '127.0.0.1' }), /не подтвердил/);
+  await assert.rejects(startMaxTransport(createWebhookBot('offline'), config, { api, logger, port, host: '127.0.0.1' }), /не подтвердил/);
   await assert.rejects(fetch(`http://127.0.0.1:${port}/health`));
 });
 
-test('polling сохраняет старый режим и останавливается вместе с HTTP-сервером', async () => {
-  const bot = new Bot('offline');
-  let started = 0;
-  let stopped = 0;
-  let finish;
-  bot.start = async options => {
-    assert.deepEqual(options.allowedUpdates, MAX_UPDATE_TYPES);
-    started++;
-    await new Promise(resolve => { finish = resolve; });
-  };
-  bot.stop = () => { stopped++; finish(); };
-  const api = async (_method, path) => path === '/me' ? { user_id: 999 } : { subscriptions: [] };
-  const transport = await startMaxTransport(bot, { ...config, BOT_TRANSPORT: 'polling' }, { api, logger, port: 0, host: '127.0.0.1' });
+test('webhook по умолчанию останавливает HTTP-сервер без lifecycle polling SDK', async () => {
+  const bot = createWebhookBot('offline');
+  bot.stop = () => { throw new Error('SDK polling lifecycle не должен вызываться'); };
+  const api = async (_method, path) => path === '/me' ? { user_id: 999 } : { subscriptions: [], success: true };
+  const transport = await startMaxTransport(bot, { ...config, BOT_TRANSPORT: undefined }, { api, logger, port: 0, host: '127.0.0.1' });
   const url = `http://127.0.0.1:${transport.server.address().port}`;
   try {
-    assert.equal(started, 1);
-    assert.equal((await fetch(`${url}/max/callback/`)).status, 404);
-    assert.equal((await (await fetch(`${url}/health`)).json()).transport, 'polling');
+    assert.equal((await fetch(`${url}/max/callback/`)).status, 405);
+    assert.equal((await (await fetch(`${url}/health`)).json()).transport, 'webhook');
   } finally { await transport.stop(); }
-  assert.equal(stopped, 1);
   await assert.rejects(fetch(`${url}/health`));
 });
 

@@ -1,9 +1,10 @@
 import axios from 'axios';
-import { MAX_API_URL } from './config.js';
+import { assertWebhookApiPath, MAX_API_URL } from './config.js';
 
 // В SDK 0.2.5 нет методов управления подписками. Используем тот же HTTPS API.
 export function createMaxApi(token, baseURL = MAX_API_URL) {
   return async (method, path, data) => {
+    assertWebhookApiPath(path);
     try {
       const response = await axios({
         baseURL, url: path, method, data,

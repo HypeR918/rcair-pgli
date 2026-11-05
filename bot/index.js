@@ -1,9 +1,9 @@
 import process from 'node:process';
-import { Bot } from '@maxhub/max-bot-api';
 import { serializeUserUpdates } from './utils/userUpdates.js';
 import { startAttachmentCleanup } from './services/maxFileService.js';
 import { MAX_API_URL } from './transport/config.js';
 import { startMaxTransport } from './transport/maxTransport.js';
+import { createWebhookBot } from './transport/webhookBot.js';
 
 import { env, requireEnv } from './config/env.js';
 
@@ -38,18 +38,13 @@ import {
 
 requireEnv();
 
-const bot = new Bot(env.BOT_TOKEN, {
+const bot = createWebhookBot(env.BOT_TOKEN, {
   clientOptions: {
     baseUrl: MAX_API_URL,
   },
 });
 
 bot.use(serializeUserUpdates);
-
-bot.catch(async (error, ctx) => {
-  console.error('Bot handler error:', error.message);
-  try { await ctx.reply('Ошибка обработки запроса. Попробуйте позже.'); } catch {}
-});
 
 let transport;
 const timers = [];
@@ -71,8 +66,8 @@ async function startApp() {
 
   console.log('Бот запущен.');
   console.log('Email verification enabled:', env.EMAIL_VERIFICATION_ENABLED);
-  console.log('Registration polling interval:', env.GLPI_APPROVAL_POLL_MS, 'ms');
-  console.log('Ticket polling interval:', env.GLPI_TICKET_POLL_MS, 'ms');
+  console.log('GLPI: интервал проверки регистрационных заявок:', env.GLPI_APPROVAL_POLL_MS, 'ms');
+  console.log('GLPI: интервал проверки заявок поддержки:', env.GLPI_TICKET_POLL_MS, 'ms');
 }
 
 startApp().catch(error => {
