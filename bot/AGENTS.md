@@ -116,6 +116,13 @@ HTTP 200 без него считается ошибкой MAX_API_UNCONFIRMED. 
 а не прочтения. Метрики не включают фоновые уведомления, editMessage и answerOnCallback.
 Сравнение трёх ботов и порядок расследования — `WEBHOOK_COMPARISON.md`.
 
+`python_webhook/` — отдельный минимальный Python/maxapi режим: /start, /menu,
+текст и тестовая кнопка без GLPI/SQL/SMTP. Использует ту же подписку (GET-проверка
+без перерегистрации). Запускается поочерёдно вместо Node через
+`deploy/use-python-webhook.sh switch|rollback`; меняется только max-bot,
+сохранённый образ Node возвращается при ошибке. Во время теста функции GLPI
+недоступны. Инструкция и проверки — `python_webhook/README.md`.
+
 ## Тестирование
 
 `DOTENV_CONFIG_PATH=/dev/null npm test` запускает регрессионные проверки без чтения `.env` через встроенный `node:test` (Node.js 22; для изоляции зависимостей тесты используют `--experimental-vm-modules`). Рабочие секреты и сервисы для unit-тестов не нужны. Webhook-тесты поднимают локальный HTTP-сервер и используют настоящий SDK с подменой внешних сервисов. `webhook-only.test.js` проверяет реальные команды, текст, callback, `bot_started`, уведомление и отсутствие запросов `/updates`.
@@ -160,6 +167,9 @@ HTTP 200 без него считается ошибкой MAX_API_UNCONFIRMED. 
 ## Деплой
 
 - Единственный прод-артефакт — Docker-образ из корневого `Dockerfile` (`node:22-bookworm-slim`, `npm ci --omit=dev`, `USER node`, `HEALTHCHECK` по `/health`, `TZ=Asia/Tomsk`, `CMD ["node", "index.js"]`).
+- Отдельный экспериментальный образ `python_webhook/Dockerfile` заменяет только
+  минимальные ответы MAX. Overlay `deploy/docker-compose.python.yml` подключается
+  последним только на время Python-теста через helper.
 - Корневого `docker-compose.yml` нет (compose-файл в `miniproject/` относится к прототипу). По `ARCHITECTURE.md` база бота — отдельный MariaDB-контейнер, доступный с хоста на `127.0.0.1:3307`; GLPI и SMTP — внешние сервисы.
 - `deploy/docker-compose.nginx.yml` добавляется к существующему Compose на сервере: Nginx и бот находятся в общей сети, upstream — `max-bot:3000` с обновлением Docker DNS. `deploy/use-docker-nginx.sh` переключает хостовый Nginx на Docker и поддерживает `rollback`, не перезапуская бота/БД. Подробности — `WEBHOOK_DEPLOY.md`; `bash test/docker-nginx.smoke.sh` проверяет настоящие контейнеры без рабочих секретов.
 - `glpi-importer.js` развёртывается отдельно на хосте GLPI (нужен доступ к `docker exec`).
