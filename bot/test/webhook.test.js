@@ -7,6 +7,8 @@ import { startMaxTransport } from '../transport/maxTransport.js';
 import { createMaxApi } from '../transport/maxApi.js';
 import { MAX_UPDATE_TYPES, validateTransportConfig } from '../transport/config.js';
 import { serializeUserUpdates } from '../utils/userUpdates.js';
+import { loadIsolated, noop } from './helpers/isolated.mjs';
+import * as db from '../services/dbService.js';
 
 const config = {
   BOT_TOKEN: 'offline-token', PORT: 3000, BOT_TRANSPORT: 'webhook',
@@ -24,7 +26,7 @@ function payload(id = 'offline.mid', userId = 123) {
   };
 }
 
-async function fixture(t, setup = () => {}) {
+async function fixture(t, setup = () => {}, transportLogger = logger) {
   const calls = [];
   const bot = new Bot(config.BOT_TOKEN);
   bot.use(serializeUserUpdates);
@@ -37,7 +39,7 @@ async function fixture(t, setup = () => {}) {
     if (method === 'GET') return { subscriptions: [] };
     return { success: true };
   };
-  const transport = await startMaxTransport(bot, config, { api, logger, host: '127.0.0.1', port: 0 });
+  const transport = await startMaxTransport(bot, config, { api, logger: transportLogger, host: '127.0.0.1', port: 0 });
   t.after(() => transport.stop());
   const base = `http://127.0.0.1:${transport.server.address().port}`;
   const deliver = (update = payload(), extra = {}) => fetch(`${base}/max/callback/`, {
@@ -163,6 +165,40 @@ test('HTTP 200 приходит после обработки; параллел�
   assert.equal(handled, 2);
 });
 
+test('диагностика различает обработку, повторы и ошибки без текста, MAX ID и секретов', async t => {
+  const records = [];
+  const errors = [];
+  let fail = false;
+  const f = await fixture(t, bot => bot.on('message_created', () => {
+    if (fail) throw new Error('simulated handler failure');
+  }), {
+    log: (label, data) => { if (label === '[MAX_WEBHOOK]') records.push(JSON.parse(data)); },
+    error: (...args) => errors.push(args),
+  });
+  const update = payload('sensitive-message-id', 987654321);
+  update.message.body.text = '/start private-message-content';
+  assert.equal((await f.deliver(update)).status, 200);
+  assert.equal((await f.deliver(update)).status, 200);
+  fail = true;
+  update.message.body.mid = 'sensitive-failed-id';
+  assert.equal((await f.deliver(update)).status, 500);
+  assert.deepEqual(records.map(item => item.stage), [
+    'received', 'finished', 'received', 'finished', 'received', 'failed',
+  ]);
+  assert.equal(records[0].type, 'message_created');
+  assert.equal(records[0].start, true);
+  assert.equal(records[0].has_user, true);
+  assert.equal(records[1].result, 'processed');
+  assert.equal(records[3].result, 'duplicate');
+  assert.equal(records[5].status, 500);
+  assert.equal(errors.length, 1);
+  const output = JSON.stringify(records);
+  for (const value of [
+    '987654321', 'private-message-content', 'sensitive-message-id', 'sensitive-failed-id',
+    config.WEBHOOK_SECRET, config.BOT_TOKEN,
+  ]) assert(!output.includes(value));
+});
+
 test('ошибка хендлера даёт 500 и допускает повтор события без утечки текста ошибки', async t => {
   let attempts = 0;
   const f = await fixture(t, bot => bot.command('start', () => {
@@ -174,6 +210,33 @@ test('ошибка хендлера даёт 500 и допускает повт�
   assert.equal((await f.deliver()).status, 200);
   assert.equal(attempts, 2);
 });
+
+for (const kind of ['message_created', 'bot_started']) {
+  test(`${kind}: настоящий обработчик старта не подтверждает событие, если MAX не принимает ни один ответ`, async t => {
+    const controller = await loadIsolated('controllers/userController.js', {
+      './config/env.js': { env: {} },
+      './services/dbService.js': Object.fromEntries(Object.keys(db).map(name => [name, noop])),
+      './state/sessionStore.js': { getSession: () => null, setSession: noop, deleteSession: noop },
+    });
+    let reject = true;
+    let replies = 0;
+    const f = await fixture(t, bot => {
+      bot.api.sendMessageToChat = async () => {
+        if (reject) throw Object.assign(new Error('simulated MAX reply rejection'), { status: 403 });
+        replies++;
+      };
+      controller.registerUserHandlers(bot);
+    });
+    const update = kind === 'message_created' ? payload() : {
+      update_type: 'bot_started', timestamp: 1, chat_id: 456, user: { user_id: 123 },
+    };
+    assert.equal((await f.deliver(update)).status, 500);
+    assert.equal(replies, 0);
+    reject = false;
+    assert.equal((await f.deliver(update)).status, 200);
+    assert.equal(replies, 1);
+  });
+}
 
 test('чужие подписки сохраняются; polling с активным webhook запрещён', async () => {
   for (const mode of ['webhook', 'polling']) {

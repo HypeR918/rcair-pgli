@@ -261,14 +261,16 @@ async function handleStart(ctx, source) {
   try {
     await entryPoint(ctx);
   } catch (error) {
-    console.error(`[START] ${source} error:`, error);
+    console.error(`[START] ${source} error:`, error.message);
 
     try {
       await ctx.reply(
         'Не удалось запустить бота. Попробуйте отправить /start ещё раз.'
       );
     } catch (replyError) {
-      console.error(`[START] ${source} reply error:`, replyError);
+      console.error(`[START] ${source} reply error:`, replyError.message);
+      // Webhook должен вернуть 500: MAX не получил подтверждения доставки ответа.
+      throw replyError;
     }
   }
 }

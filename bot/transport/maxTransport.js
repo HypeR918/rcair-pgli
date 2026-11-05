@@ -62,8 +62,11 @@ function createDispatcher(bot) {
       if (now - time < DEDUP_TTL_MS) break;
       completed.delete(id);
     }
-    if (key && completed.has(key)) return;
-    if (key && active.has(key)) return active.get(key);
+    if (key && completed.has(key)) return 'duplicate';
+    if (key && active.has(key)) {
+      await active.get(key);
+      return 'duplicate';
+    }
 
     const task = Promise.resolve().then(async () => {
       const ctx = new Context(update, bot.api, bot.botInfo);
@@ -76,7 +79,7 @@ function createDispatcher(bot) {
       }
     });
     if (key) active.set(key, task);
-    try { await task; } finally { if (key) active.delete(key); }
+    try { await task; return 'processed'; } finally { if (key) active.delete(key); }
   };
 }
 
@@ -100,6 +103,7 @@ export async function startMaxTransport(bot, config, options = {}) {
 
   let ready = false;
   let stopping = false;
+  let sequence = 0;
   const dispatch = createDispatcher(bot);
   const server = http.createServer(async (req, res) => {
     // Query-параметры не влияют на маршрут; полезно для внешней проверки Nginx.
@@ -131,15 +135,35 @@ export async function startMaxTransport(bot, config, options = {}) {
       reply(res, 503, { ok: false });
       return;
     }
+    let event;
+    let receivedAt;
     try {
       const update = await readUpdate(req);
-      if (MAX_UPDATE_TYPES.includes(update.update_type)) await dispatch(update);
+      event = ++sequence;
+      receivedAt = Date.now();
+      const supported = MAX_UPDATE_TYPES.includes(update.update_type);
+      // Только метаданные: без текста, MAX ID, callback payload и заголовка секрета.
+      const ctx = supported ? new Context(update, bot.api, bot.botInfo) : null;
+      const start = typeof update.message?.body?.text === 'string'
+        && /^\/start(?:@\S+)?(?:\s|$)/.test(update.message.body.text.trim());
+      logger.log('[MAX_WEBHOOK]', JSON.stringify({
+        event, stage: 'received', type: supported ? update.update_type : 'unsupported',
+        start, has_user: Boolean(ctx?.user?.user_id),
+      }));
+      const result = supported ? await dispatch(update) : 'ignored';
       reply(res, 200, { ok: true });
+      logger.log('[MAX_WEBHOOK]', JSON.stringify({
+        event, stage: 'finished', result, status: 200, duration_ms: Date.now() - receivedAt,
+      }));
     } catch (error) {
       req.resume();
       const status = error instanceof WebhookRequestError ? error.status : 500;
       if (status === 500) logger.error('Ошибка MAX webhook:', error.message);
       if (!res.destroyed) reply(res, status, { ok: false });
+      logger.log('[MAX_WEBHOOK]', JSON.stringify({
+        event: event ?? null, stage: 'failed', status,
+        duration_ms: receivedAt === undefined ? 0 : Date.now() - receivedAt,
+      }));
     }
   });
   server.requestTimeout = 30000;
