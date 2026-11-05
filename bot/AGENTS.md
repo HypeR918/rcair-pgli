@@ -141,6 +141,7 @@ Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot
 
 - Единственный прод-артефакт — Docker-образ из корневого `Dockerfile` (`node:22-bookworm-slim`, `npm ci --omit=dev`, `USER node`, `HEALTHCHECK` по `/health`, `TZ=Asia/Tomsk`, `CMD ["node", "index.js"]`).
 - Корневого `docker-compose.yml` нет (compose-файл в `miniproject/` относится к прототипу). По `ARCHITECTURE.md` база бота — отдельный MariaDB-контейнер, доступный с хоста на `127.0.0.1:3307`; GLPI и SMTP — внешние сервисы.
+- `deploy/docker-compose.nginx.yml` добавляется к существующему Compose на сервере: Nginx и бот находятся в общей сети, upstream — `max-bot:3000` с обновлением Docker DNS. `deploy/use-docker-nginx.sh` переключает хостовый Nginx на Docker и поддерживает `rollback`, не перезапуская бота/БД. Подробности — `WEBHOOK_DEPLOY.md`; `bash test/docker-nginx.smoke.sh` проверяет настоящие контейнеры без рабочих секретов.
 - `glpi-importer.js` развёртывается отдельно на хосте GLPI (нужен доступ к `docker exec`).
 
 ## Подводные камни (расхождения кода и документации)

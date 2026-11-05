@@ -1,0 +1,37 @@
+# Дополнение к существующим docker-compose.yml и docker-compose.webhook.yml.
+# Бот и БД сохраняют свои настройки, сети, тома и образ.
+services:
+  nginx:
+    image: nginx:1.28-alpine
+    container_name: ${MAX_BOT_NGINX_CONTAINER_NAME:-max_bot_nginx}
+    restart: unless-stopped
+    ports:
+      - "${MAX_BOT_BIND_IP:-0.0.0.0}:${MAX_BOT_HTTP_PORT:-80}:80"
+      - "${MAX_BOT_BIND_IP:-0.0.0.0}:${MAX_BOT_HTTPS_PORT:-443}:443"
+    volumes:
+      - type: bind
+        source: ${MAX_BOT_NGINX_CONF:-/opt/max-bot/rcair-pgli/bot/deploy/nginx.docker.conf}
+        target: /etc/nginx/conf.d/default.conf
+        read_only: true
+        bind:
+          create_host_path: false
+      - type: bind
+        source: ${MAX_BOT_TLS_DIR:-/etc/nginx/tls/botsupport.gov70.ru}
+        target: /etc/nginx/tls/botsupport.gov70.ru
+        read_only: true
+        bind:
+          create_host_path: false
+    depends_on:
+      max-bot:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-Y", "off", "-q", "-O", "/dev/null", "http://127.0.0.1:8081/health"]
+      interval: 10s
+      timeout: 5s
+      start_period: 5s
+      retries: 3
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
