@@ -183,20 +183,69 @@ test('диагностика различает обработку, повтор
   update.message.body.mid = 'sensitive-failed-id';
   assert.equal((await f.deliver(update)).status, 500);
   assert.deepEqual(records.map(item => item.stage), [
-    'received', 'finished', 'received', 'finished', 'received', 'failed',
+    'request', 'received', 'finished', 'request', 'received', 'finished', 'request', 'received', 'failed',
   ]);
-  assert.equal(records[0].type, 'message_created');
-  assert.equal(records[0].start, true);
-  assert.equal(records[0].has_user, true);
-  assert.equal(records[1].result, 'processed');
-  assert.equal(records[3].result, 'duplicate');
-  assert.equal(records[5].status, 500);
+  assert.equal(records[1].type, 'message_created');
+  assert.equal(records[1].start, true);
+  assert.equal(records[1].has_user, true);
+  assert.equal(records[2].result, 'processed');
+  assert.equal(records[5].result, 'duplicate');
+  assert.equal(records[8].status, 500);
   assert.equal(errors.length, 1);
   const output = JSON.stringify(records);
   for (const value of [
     '987654321', 'private-message-content', 'sensitive-message-id', 'sensitive-failed-id',
     config.WEBHOOK_SECRET, config.BOT_TOKEN,
   ]) assert(!output.includes(value));
+});
+
+test('внутренняя диагностика учитывает отказ секрета, ошибки, активную обработку и отдельные пробы', async t => {
+  const records = [];
+  let release;
+  let entered;
+  const gate = new Promise(resolve => { release = resolve; });
+  const started = new Promise(resolve => { entered = resolve; });
+  t.after(() => release());
+  const f = await fixture(t, bot => bot.command('start', async () => { entered(); await gate; }), {
+    log: (label, data) => { if (label === '[MAX_WEBHOOK]') records.push(JSON.parse(data)); },
+    error() {},
+  });
+  const snapshot = async () => {
+    const response = await fetch(`${f.base}/diagnostics`);
+    assert.equal(response.status, 200);
+    return response.json();
+  };
+  const before = await snapshot();
+  assert.equal(before.received, 0);
+  assert.equal(before.active, 0);
+  assert.equal(before.ready, true);
+  assert.equal((await f.deliver(payload(), { headers: { 'Content-Type': 'application/json' } })).status, 403);
+  assert.equal((await f.deliver(null, { body: '{' })).status, 400);
+  const pending = f.deliver(payload('pending.mid'));
+  await started;
+  const busy = await snapshot();
+  assert.equal(busy.received, 3);
+  assert.equal(busy.authorized, 2);
+  assert.equal(busy.rejected, 1);
+  assert.equal(busy.failed, 1);
+  assert.equal(busy.active, 1);
+  assert.equal(busy.types.message_created, 1);
+  assert.ok(busy.oldest_active_ms >= 0);
+  release();
+  assert.equal((await pending).status, 200);
+  assert.equal((await f.deliver(payload('pending.mid'))).status, 200);
+  assert.equal((await f.deliver({ update_type: 'diagnostic_probe', timestamp: Date.now() })).status, 200);
+  const after = await snapshot();
+  assert.equal(after.processed, 1);
+  assert.equal(after.duplicate, 1);
+  assert.equal(after.ignored, 1);
+  assert.equal(after.types.message_created, 2);
+  assert.equal(after.types.unsupported, 1);
+  assert.equal(after.active, 0);
+  assert.equal(after.oldest_active_ms, 0);
+  assert.ok(after.last_received_at);
+  assert(records.some(r => r.stage === 'rejected' && r.status === 403 && r.reason === 'secret'));
+  assert(!JSON.stringify({ records, after }).includes(config.WEBHOOK_SECRET));
 });
 
 test('ошибка хендлера даёт 500 и допускает повтор события без утечки текста ошибки', async t => {

@@ -521,16 +521,12 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    session.state = State.WAIT_NEW_TICKET_DESCRIPTION;
-    session.ticketDraft = {
-      title: safeText,
-      description: '',
-      files: [],
-    };
-
-    await setSession(maxUserId, session);
-
     await ctx.reply('Подробно опишите Ваш запрос или проблему');
+    await setSession(maxUserId, {
+      ...session,
+      state: State.WAIT_NEW_TICKET_DESCRIPTION,
+      ticketDraft: { title: safeText, description: '', files: [] },
+    });
     return true;
   }
 
@@ -540,17 +536,13 @@ export async function handleTicketTextState(ctx, session, text) {
       return true;
     }
 
-    session.state = State.WAIT_NEW_TICKET_FILES;
-    session.ticketDraft = {
-      ...(session.ticketDraft || {}),
-      description: safeText,
-      files: [],
-    };
-
-    await setSession(maxUserId, session);
-
     await ctx.reply('Описание принято.', {
       attachments: [ticketAttachChoiceKeyboard()],
+    });
+    await setSession(maxUserId, {
+      ...session,
+      state: State.WAIT_NEW_TICKET_FILES,
+      ticketDraft: { ...(session.ticketDraft || {}), description: safeText, files: [] },
     });
 
     return true;

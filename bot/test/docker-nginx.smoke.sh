@@ -40,10 +40,19 @@ services:
     command: ["node", "test/helpers/docker-webhook.mjs"]
     environment:
       DOTENV_CONFIG_PATH: /dev/null
+      BOT_TOKEN: offline-token
+      WEBHOOK_SECRET: offline-webhook-secret
+      WEBHOOK_URL: https://botsupport.gov70.ru/max/callback/
+      NODE_EXTRA_CA_CERTS: /test-ca.pem
+      NO_PROXY: 127.0.0.1,localhost,nginx,max-bot
     volumes:
       - type: bind
         source: ${RCAIR_SMOKE_BOT_DIR}
         target: /app
+        read_only: true
+      - type: bind
+        source: ${MAX_BOT_TLS_DIR}/fullchain.pem
+        target: /test-ca.pem
         read_only: true
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
@@ -82,10 +91,15 @@ deliver() {
 [ "$(deliver first)" = 200 ]
 [ "$(compose logs max-bot | rg -c DOCKER_SMOKE_REPLY)" = 1 ]
 [ "$(deliver failure fail)" = 500 ]
+[ "$(deliver timeout stall)" = 500 ]
+[ "$(deliver recovered)" = 200 ]
+[ "$(compose logs max-bot | rg -c DOCKER_SMOKE_REPLY)" = 2 ]
+compose exec -T max-bot node scripts/diagnose-webhook.mjs --local-only --watch 0
+[ "$(compose logs max-bot | rg -c DOCKER_SMOKE_REPLY)" = 2 ]
 [ "$(curl --noproxy botsupport.gov70.ru --silent --show-error \
   --resolve "botsupport.gov70.ru:$http_port:127.0.0.1" -o /dev/null -w '%{http_code}' \
   "http://botsupport.gov70.ru:$http_port/max/callback/")" = 301 ]
-echo 'Проверены: TLS/имя сертификата, POST, секрет, SDK /start, дедупликация, ошибка 500, HTTP redirect.'
+echo 'Проверены: TLS/имя сертификата, настоящий SDK HTTP, /start, дедупликация, таймаут/восстановление, диагностика, HTTP redirect.'
 
 # Принудительно меняем IP бота: старый адрес временно занимает тестовый контейнер.
 old_ip="$(docker inspect -f '{{range .NetworkSettings.Networks}}{{.IPAddress}}{{end}}' "$bot_before")"

@@ -4,7 +4,7 @@ export const MAX_POLLING_DISABLED_MESSAGE = 'Опрос MAX через /updates 
 
 export function assertWebhookApiPath(path) {
   const url = new URL(String(path), MAX_API_URL);
-  if (url.pathname.replace(/\/+$/, '') === '/updates') {
+  if (decodeURIComponent(url.pathname).replace(/\/+$/, '') === '/updates') {
     throw new Error(MAX_POLLING_DISABLED_MESSAGE);
   }
 }

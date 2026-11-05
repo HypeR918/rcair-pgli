@@ -80,14 +80,80 @@ bash test/docker-nginx.smoke.sh
 
 Нужны Docker Compose v2, OpenSSL, curl и rg. Тест создаёт отдельный проект,
 временный сертификат и локальную заглушку MAX; проверяет TLS с проверкой имени,
-секрет, `/start` через настоящий SDK, дедупликацию, HTTP 500 и восстановление
-после смены IP контейнера бота. Свои контейнеры и сертификат тест удаляет.
+секрет, `/start` через настоящий SDK и исходящий HTTP, дедупликацию, HTTP 500,
+отмену зависшего запроса и восстановление после смены IP контейнера бота.
+Свои контейнеры и сертификат тест удаляет.
+
+## Обновление образа после исправлений
+
+`git pull` обновляет исходники. Запущенному контейнеру нужен новый образ.
+От обычного пользователя:
+
+```bash
+cd /opt/max-bot/rcair-pgli
+git switch feat/glpi-max-webhook
+git pull --ff-only origin feat/glpi-max-webhook
+```
+
+Сборка и обновление только бота, с резервным тегом прежнего образа:
+
+```bash
+sudo bash <<'BASH'
+set -euo pipefail
+cd /opt/max-bot
+args=(-p max-bot)
+if [ -f /opt/max-bot/.env ]; then args+=(--env-file /opt/max-bot/.env); fi
+args+=(
+  --env-file /opt/max-bot/webhook.env
+  -f /opt/max-bot/docker-compose.yml
+  -f /opt/max-bot/docker-compose.webhook.yml
+  -f /opt/max-bot/rcair-pgli/bot/deploy/docker-compose.nginx.yml
+)
+docker compose "${args[@]}" config --quiet
+previous_image="$(docker inspect -f '{{.Image}}' max_bot)"
+backup_tag="max-glpi-bot:before-audit-$(TZ=Asia/Tomsk date +%Y%m%d-%H%M%S)"
+docker image tag "$previous_image" "$backup_tag"
+echo "Резервный образ: $backup_tag"
+docker compose "${args[@]}" build max-bot
+if ! docker compose "${args[@]}" up -d --no-deps --no-build --wait --wait-timeout 120 max-bot; then
+  echo 'Возвращаем прежний образ бота.' >&2
+  docker image tag "$previous_image" max-glpi-bot:webhook
+  docker compose "${args[@]}" up -d --no-deps --no-build --wait --wait-timeout 120 max-bot
+  exit 1
+fi
+BASH
+```
+
+Compose использует существующие файлы, не выводя их содержимое. В этой установке
+образ бота — `max-glpi-bot:webhook`. MariaDB и Nginx не пересоздаются.
+
+## Одна команда диагностики
+
+После обновления образа:
+
+```bash
+sudo docker exec -i max_bot node scripts/diagnose-webhook.mjs --watch 30
+```
+
+Команда выводит username бота и результат проверки подписки, затем проверяет
+авторизованный POST напрямую и через Docker Nginx с TLS. Ожидаются
+`Node callback: HTTP 200, OK` и `Nginx HTTPS → callback: HTTP 200, OK`.
+Ответ сверяется с nonce пробы и ID текущего процесса: чужой HTTP 200 не считается
+успехом. Затем в течение 30 секунд отправьте новый `/start` в MAX.
+Пробные события игнорируются и считаются отдельно от настоящих событий MAX.
+Подписка, бизнес-сессии и GLPI командой не изменяются, сообщения в MAX не отправляются.
+Токен/секрет не выводятся; `.env` команда не открывает.
+
+`--local-only --watch 0` проверяет локальную цепочку без MAX API. Код завершения
+0 подтверждает локальную проверку и, без `--local-only`, совпадение подписки.
+Настоящую доставку показывает отдельное число событий за окно наблюдения.
+Итоги и пределы проверки — [WEBHOOK_AUDIT.md](WEBHOOK_AUDIT.md).
 
 Основной бот получает события MAX только через webhook. В нём нет запуска long polling
 MAX или автоматического возврата к `/updates`. SDK-методы `bot.start()`,
 `bot.api.getUpdates()`, `bot.api.raw.subscriptions.getUpdates()` и обычный raw GET
-`/updates` заблокированы до сетевого запроса. Отдельный HTTP-клиент MAX также
-отклоняет путь `/updates`. Команды и кнопки проходят через ту же
+`/updates` заблокированы до сетевого запроса. Общий HTTP-клиент MAX также
+отклоняет `/updates` для raw-вызовов и кодированных путей. Команды и кнопки проходят через ту же
 цепочку middleware и обработчиков.
 
 Опрос заявок GLPI и регистрационных заявок СДС — отдельные обращения к GLPI/SQL,
@@ -216,6 +282,12 @@ curl --connect-timeout 10 --max-time 20 -I https://botsupport.gov70.ru/max/callb
 ожидаемое сообщение в MAX проверяется отдельно. Текст, MAX ID, callback payload,
 ID сообщения и секрет в эти диагностические записи не включаются.
 
+`stage=request` фиксирует начало callback POST до проверки секрета и тела.
+`stage=rejected` с `reason=secret` означает отказ авторизации, `not_ready` —
+незавершённый запуск. Внутренний GET `/diagnostics` содержит счётчики и активные
+запросы; публичный Nginx его не проксирует. JSON-запросы SDK и подписки ограничены
+30 секундами с реальной отменой HTTP. Для `attachment.not.ready` — два повтора.
+
 ## Доставка, повторы и остановка
 
 - Проверка секрета выполняется до чтения тела. Тело — JSON, максимум 1 МиБ;
@@ -227,8 +299,8 @@ ID сообщения и секрет в эти диагностические �
 - Повторные `message_created` с одним `mid` и callbacks с одним `callback_id`
   объединяются в процессе обработки и запоминаются на 10 минут (не более 10000).
   Неуспешное событие можно повторить. Это память одного процесса: после рестарта
-  повторы возможны; гарантии exactly-once для GLPI нет. `bot_started` без отдельного
-  ID события не дедуплицируется. Механизм последовательной обработки MAX ID сохранён.
+  повторы возможны; гарантии exactly-once для GLPI нет. `bot_started` дедуплицируется
+  по хешу timestamp/chat/user/payload. Последовательность обработки MAX ID сохранена.
 - При SIGINT/SIGTERM приём останавливается, текущим HTTP-запросам даётся до 15 секунд,
   затем закрываются GLPI-сессия и БД. Подписка не удаляется при остановке, чтобы
   последующий запуск сохранил доставку. Периодические таймеры GLPI/очистки останавливаются.

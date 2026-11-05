@@ -27,7 +27,13 @@ index.js                  — точка входа: создание Bot, ре�
 config/env.js             — чтение .env, requireEnv() проверяет обязательные переменные
 transport/                — только MAX webhook, проверка секрета, HTTP и подписки
   webhookBot.js           — экземпляр SDK с запретом запуска polling и чтения /updates
+  maxClient.js            — общий JSON HTTP-клиент MAX: Axios, TLS/proxy, timeout + AbortSignal
+  updateDispatcher.js     — middleware SDK и дедупликация трёх типов событий
+  webhookContext.js       — callback без message: личный ответ по user_id
+  webhookDiagnostics.js   — безопасные счётчики приёма/обработки и ID процесса
+scripts/diagnose-webhook.mjs — подписка, Node POST, Docker Nginx TLS POST и наблюдение
 WEBHOOK_DEPLOY.md          — запуск webhook на botsupport.gov70.ru, проверки и Nginx
+WEBHOOK_AUDIT.md           — воспроизведённые ошибки, исправления, пределы доказательств
 controllers/
   userController.js       — вход: /start, /menu, bot_started; email-верификация, блокировка
   messageController.js    — единый роутер message_created: диспетчеризация по State сессии
@@ -95,6 +101,12 @@ docker run --env-file .env -p 3000:3000 max-bot
 Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot","transport":"webhook"}`. До подтверждённого старта возвращается `503`; это не проверка внешней доставки.
 
 `npm start` запускает `index.js`. Перед развёртыванием прочитайте `SECURITY_CHANGES.md`: там описаны настройки вложений, лимиты, повторная обработка СДС и миграция `bot_verification_limits`.
+
+Внутренний `GET /diagnostics` показывает приём POST, отказы, ошибки и активные запросы;
+Nginx его не публикует. `sudo docker exec -i max_bot node scripts/diagnose-webhook.mjs --watch 30`
+проверяет подписку и локальные POST с nonce/ID процесса, затем предлагает отправить
+`/start`. Команда использует внедрённые настройки, не открывает `.env`, не меняет
+подписку и не вызывает бизнес-хендлеры для проб. `--local-only --watch 0` не обращается к MAX API.
 
 ## Тестирование
 

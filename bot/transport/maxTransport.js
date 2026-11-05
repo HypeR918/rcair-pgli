@@ -1,12 +1,12 @@
 import http from 'node:http';
 import { timingSafeEqual } from 'node:crypto';
-import { Context } from '@maxhub/max-bot-api';
 import { MAX_UPDATE_TYPES, validateTransportConfig } from './config.js';
 import { createMaxApi } from './maxApi.js';
+import { WebhookContext } from './webhookContext.js';
+import { createDispatcher } from './updateDispatcher.js';
+import { createWebhookDiagnostics } from './webhookDiagnostics.js';
 
 const MAX_BODY_BYTES = 1024 * 1024;
-const DEDUP_TTL_MS = 10 * 60 * 1000;
-const MAX_RECENT_UPDATES = 10000;
 
 function reply(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
@@ -46,43 +46,6 @@ async function readUpdate(req) {
   return update;
 }
 
-function updateKey(update) {
-  const id = update.update_type === 'message_created' ? update.message?.body?.mid
-    : update.update_type === 'message_callback' ? update.callback?.callback_id : null;
-  return typeof id === 'string' && id ? `${update.update_type}:${id}` : null;
-}
-
-function createDispatcher(bot) {
-  const active = new Map();
-  const completed = new Map();
-  return async update => {
-    const key = updateKey(update);
-    const now = Date.now();
-    for (const [id, time] of completed) {
-      if (now - time < DEDUP_TTL_MS) break;
-      completed.delete(id);
-    }
-    if (key && completed.has(key)) return 'duplicate';
-    if (key && active.has(key)) {
-      await active.get(key);
-      return 'duplicate';
-    }
-
-    const task = Promise.resolve().then(async () => {
-      const ctx = new Context(update, bot.api, bot.botInfo);
-      // Публичные Context/middleware сохраняют все хендлеры и сериализацию MAX ID.
-      // Ошибка передаётся HTTP-транспорту, чтобы MAX мог повторить доставку.
-      await bot.middleware()(ctx, () => Promise.resolve());
-      if (key) {
-        completed.set(key, Date.now());
-        if (completed.size > MAX_RECENT_UPDATES) completed.delete(completed.keys().next().value);
-      }
-    });
-    if (key) active.set(key, task);
-    try { await task; return 'processed'; } finally { if (key) active.delete(key); }
-  };
-}
-
 export async function startMaxTransport(bot, config, options = {}) {
   const transport = validateTransportConfig(config);
   const api = options.api || createMaxApi(config.BOT_TOKEN);
@@ -102,13 +65,17 @@ export async function startMaxTransport(bot, config, options = {}) {
   if (!bot.botInfo?.user_id) throw new Error('MAX не подтвердил учётную запись бота');
 
   let ready = false;
-  let sequence = 0;
   const dispatch = createDispatcher(bot);
+  const diagnostics = createWebhookDiagnostics(logger);
   const server = http.createServer(async (req, res) => {
     // Query-параметры не влияют на маршрут; полезно для внешней проверки Nginx.
     const path = req.url.split('?')[0];
     if (req.method === 'GET' && path === '/health') {
       reply(res, ready ? 200 : 503, { ok: ready, service: 'max-bot', transport: transport.mode });
+      return;
+    }
+    if (req.method === 'GET' && path === '/diagnostics') {
+      reply(res, 200, { ready, ...diagnostics.snapshot() });
       return;
     }
     if (path !== transport.path) {
@@ -122,47 +89,48 @@ export async function startMaxTransport(bot, config, options = {}) {
       reply(res, 405, { ok: false });
       return;
     }
+    const event = diagnostics.begin();
     const incoming = Buffer.from(req.headers['x-max-bot-api-secret'] || '');
     const expected = Buffer.from(transport.secret);
     if (incoming.length !== expected.length || !timingSafeEqual(incoming, expected)) {
       req.resume();
       reply(res, 403, { ok: false });
+      diagnostics.finish(event, { status: 403, reason: 'secret' });
       return;
     }
+    diagnostics.authorize();
     if (!ready) {
       req.resume();
       reply(res, 503, { ok: false });
+      diagnostics.finish(event, { status: 503, reason: 'not_ready' });
       return;
     }
-    let event;
-    let receivedAt;
     try {
       const update = await readUpdate(req);
-      event = ++sequence;
-      receivedAt = Date.now();
       const supported = MAX_UPDATE_TYPES.includes(update.update_type);
       // Только метаданные: без текста, MAX ID, callback payload и заголовка секрета.
-      const ctx = supported ? new Context(update, bot.api, bot.botInfo) : null;
+      const ctx = supported ? new WebhookContext(update, bot.api, bot.botInfo) : null;
       const start = typeof update.message?.body?.text === 'string'
         && /^\/start(?:@\S+)?(?:\s|$)/.test(update.message.body.text.trim());
-      logger.log('[MAX_WEBHOOK]', JSON.stringify({
-        event, stage: 'received', type: supported ? update.update_type : 'unsupported',
+      diagnostics.received(event, {
+        type: supported ? update.update_type : 'unsupported',
         start, has_user: Boolean(ctx?.user?.user_id),
-      }));
-      const result = supported ? await dispatch(update) : 'ignored';
-      reply(res, 200, { ok: true });
-      logger.log('[MAX_WEBHOOK]', JSON.stringify({
-        event, stage: 'finished', result, status: 200, duration_ms: Date.now() - receivedAt,
-      }));
+      });
+      const result = supported ? await dispatch(ctx) : 'ignored';
+      const body = { ok: true };
+      if (update.update_type === 'diagnostic_probe'
+          && typeof update.probe_id === 'string' && /^[a-f0-9-]{36}$/.test(update.probe_id)) {
+        body.probe_id = update.probe_id;
+        body.instance_id = diagnostics.snapshot().instance_id;
+      }
+      reply(res, 200, body);
+      diagnostics.finish(event, { result, status: 200 });
     } catch (error) {
       req.resume();
       const status = error instanceof WebhookRequestError ? error.status : 500;
       if (status === 500) logger.error('Ошибка MAX webhook:', error.message);
-      if (!res.destroyed) reply(res, status, { ok: false });
-      logger.log('[MAX_WEBHOOK]', JSON.stringify({
-        event: event ?? null, stage: 'failed', status,
-        duration_ms: receivedAt === undefined ? 0 : Date.now() - receivedAt,
-      }));
+      if (!res.destroyed && !res.headersSent) reply(res, status, { ok: false });
+      diagnostics.finish(event, { status });
     }
   });
   server.requestTimeout = 30000;

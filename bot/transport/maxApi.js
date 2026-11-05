@@ -1,22 +1,14 @@
-import axios from 'axios';
-import { assertWebhookApiPath, MAX_API_URL } from './config.js';
+import { MAX_API_URL } from './config.js';
+import { createMaxClient } from './maxClient.js';
 
 // В SDK 0.2.5 нет методов управления подписками. Используем тот же HTTPS API.
 export function createMaxApi(token, baseURL = MAX_API_URL) {
+  const client = createMaxClient(token, { baseUrl: baseURL });
   return async (method, path, data) => {
-    assertWebhookApiPath(path);
-    try {
-      const response = await axios({
-        baseURL, url: path, method, data,
-        headers: { Authorization: token },
-        timeout: 30000,
-        maxRedirects: 0,
-      });
-      return response.data;
-    } catch (error) {
-      // AxiosError содержит Authorization в config: его нельзя передавать в лог.
-      const reason = error.response?.status ? `HTTP ${error.response.status}` : 'ошибка соединения';
-      throw new Error(`MAX API ${method} ${path}: ${reason}`);
+    const response = await client.call({ method: path, options: { method, body: data } });
+    if (response.status < 200 || response.status >= 300) {
+      throw new Error(`MAX API ${method} ${path}: HTTP ${response.status}`);
     }
+    return response.data;
   };
 }
