@@ -23,6 +23,9 @@ if(name==='id'){console.log('0');process.exit(0)}
 if(name==='sleep')process.exit(0);
 if(name==='openssl'){console.log('${'b'.repeat(64)}');process.exit(0)}
 fs.appendFileSync(process.env.RCAIR_COMMAND_LOG,JSON.stringify(args)+'\\n');
+if(args[0]==='compose'&&args.includes('run')&&args.includes('--no-build')){
+ console.error('unknown flag: --no-build');process.exit(16);
+}
 if(args[0]==='inspect')console.log(args.includes('{{.Image}}')?'${image}':'max-glpi-bot:webhook');
 if(args.includes('config')&&args.includes('--format'))console.log(JSON.stringify({services:{'max-bot':{image:'max-glpi-bot:webhook',environment:{BOT_TOKEN:'offline-token'}}}}));
 if(failure==='build'&&args[0]==='build')process.exit(1);
@@ -52,6 +55,9 @@ test('Rabbit migration: offline build/init до остановки, затем �
   const stop=position(c=>c.includes('stop')&&c.at(-1)==='max-bot');
   assert(position(c=>c[0]==='build'&&c.includes('none'))<stop);
   assert(position(c=>c.includes('init'))<stop);
+  const init=r.commands.find(c=>c.includes('run')&&c.at(-1)==='init');
+  assert(init.includes('--no-deps')&&init.includes('--rm'));
+  assert.equal(init[init.indexOf('--pull')+1],'never');
   assert(position(c=>c.includes('up')&&c.at(-1)==='max-bot-worker')>stop);
   const snapshot=r.commands.find(c=>c.includes('--no-interpolate'));
   assert(snapshot.includes('--no-env-resolution'));

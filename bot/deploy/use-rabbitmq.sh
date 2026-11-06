@@ -22,7 +22,8 @@ base_args+=(--env-file "$deploy_dir/webhook.env" -f "$deploy_dir/docker-compose.
 base() { docker compose "${base_args[@]}" "$@"; }
 queued() { docker compose "${base_args[@]}" \
   --env-file "$queue_env" -f "$bot_dir/deploy/docker-compose.rabbitmq.yml" "$@"; }
-cli() { queued run --rm --no-deps --no-build --entrypoint node max-bot /app/scripts/events.mjs "$@"; }
+# У run нет флага --no-build: используем уже собранный image без pull.
+cli() { queued run --rm --no-deps --pull never --entrypoint node max-bot /app/scripts/events.mjs "$@"; }
 
 if [ "$action" = status ]; then
   [ -f "$queue_env" ] && [ -f "$MAX_BOT_QUEUE_BASE" ] || { echo 'Очередь ещё не настроена.'; exit 1; }

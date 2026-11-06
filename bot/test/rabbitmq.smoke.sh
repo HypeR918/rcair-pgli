@@ -104,6 +104,10 @@ services:
       timeout: 4s
       retries: 45
 YAML
+# Реальная команда миграции: init до старта ролей, без build/pull/dependencies.
+# В отличие от compose up, compose run не поддерживает --no-build.
+compose up -d --no-deps --no-build --wait --wait-timeout 120 max-bot-db
+compose run --rm --no-deps --pull never --entrypoint node max-bot /app/scripts/events.mjs init
 compose up -d --no-build --wait --wait-timeout 150
 nginx_id="$(compose ps -q nginx)"
 https_port="$(compose port nginx 443)"; https_port="${https_port##*:}"

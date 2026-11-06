@@ -63,6 +63,13 @@ Worker получает полную прежнюю конфигурацию б�
 Контейнеры: max_bot (ingress), max_bot_worker, max_bot_rabbitmq,
 прежние max_bot_nginx и max_bot_db. Интерфейс бота и GLPI-функции сохранены.
 
+Если прежний helper остановился на `unknown flag: --no-build` после запуска
+RabbitMQ, обновите ветку и повторите `switch`. Ошибка происходила до `init`
+и остановки прежнего бота. Повторный запуск сохраняет созданные rabbitmq.env,
+ключ шифрования и том брокера. Удалять их или выполнять `down -v` не нужно.
+Исправленный `compose run` использует `--pull never`; `--no-build` допустим
+у `compose up`, но не у `compose run`.
+
 ## Что создаётся в MariaDB
 
 - bot_max_events: уникальный ключ события, тип, зашифрованный payload,
