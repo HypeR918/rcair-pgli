@@ -15,7 +15,7 @@ import {
 
 let registrationPollingInProgress = false;
 
-export async function pollPendingSdsRequests(bot) {
+export async function pollPendingSdsRequests(bot, { enqueueDecision } = {}) {
   if (registrationPollingInProgress) {
     return;
   }
@@ -61,6 +61,14 @@ export async function pollPendingSdsRequests(bot) {
             decision_text: result.decision.text,
           };
 
+          if (enqueueDecision) {
+            await enqueueDecision({
+              update_type: `sds_${result.decision.status.toLowerCase()}`,
+              timestamp: 0, user: { user_id: request.max_id }, request: enrichedRequest,
+            });
+            continue;
+          }
+
           if (result.decision.status === 'APPROVED') {
             await handleApprovedSdsRequest(bot, enrichedRequest);
             continue;
@@ -92,14 +100,14 @@ export async function pollPendingSdsRequests(bot) {
   }
 }
 
-export function startSdsPolling(bot, intervalMs) {
+export function startSdsPolling(bot, intervalMs, options) {
   const timer = setInterval(() => {
-    pollPendingSdsRequests(bot).catch(err => {
+    pollPendingSdsRequests(bot, options).catch(err => {
       console.error('registration polling fatal error:', err.message);
     });
   }, intervalMs);
 
-  pollPendingSdsRequests(bot).catch(err => {
+  pollPendingSdsRequests(bot, options).catch(err => {
     console.error('registration polling startup error:', err.message);
   });
   return timer;

@@ -55,15 +55,17 @@ export async function startMaxTransport(bot, config, options = {}) {
     logger.error('MAX transport fatal error:', error.message);
     process.exit(1);
   });
-  const subscriptions = await api('GET', '/subscriptions');
-  if (!Array.isArray(subscriptions?.subscriptions)) {
-    throw new Error('MAX не вернул список подписок');
+  if (!options.existingSubscription) {
+    const subscriptions = await api('GET', '/subscriptions');
+    if (!Array.isArray(subscriptions?.subscriptions)) {
+      throw new Error('MAX не вернул список подписок');
+    }
+    if (subscriptions.subscriptions.some(item => item.url !== transport.url)) {
+      throw new Error('У бота есть другой webhook. Сначала явно перенесите или удалите старую подписку MAX');
+    }
+    bot.botInfo = await api('GET', '/me');
+    if (!bot.botInfo?.user_id) throw new Error('MAX не подтвердил учётную запись бота');
   }
-  if (subscriptions.subscriptions.some(item => item.url !== transport.url)) {
-    throw new Error('У бота есть другой webhook. Сначала явно перенесите или удалите старую подписку MAX');
-  }
-  bot.botInfo = await api('GET', '/me');
-  if (!bot.botInfo?.user_id) throw new Error('MAX не подтвердил учётную запись бота');
 
   let ready = false;
   let accepting = false;
@@ -77,7 +79,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       return;
     }
     if (req.method === 'GET' && path === '/diagnostics') {
-      reply(res, 200, { ready, ...diagnostics.snapshot() });
+      reply(res, 200, { ready, ...diagnostics.snapshot(), ...(options.queueSnapshot && { queue: options.queueSnapshot() }) });
       return;
     }
     if (path !== transport.path) {
@@ -124,7 +126,12 @@ export async function startMaxTransport(bot, config, options = {}) {
         phase => diagnostics.setPhase(event, phase),
         result => diagnostics.reply(event, result),
       );
-      const result = supported ? await operation.run(() => dispatch(ctx)) : 'ignored';
+      const result = supported ? await operation.run(async () => {
+        if (!options.acceptUpdate) return dispatch(ctx); // Изолированный direct-test harness.
+        const saved = await options.acceptUpdate(update);
+        diagnostics.persisted(event, saved);
+        return saved.duplicate ? 'duplicate' : 'queued';
+      }) : 'ignored';
       const body = { ok: true };
       if (update.update_type === 'diagnostic_probe'
           && typeof update.probe_id === 'string' && /^[a-f0-9-]{36}$/.test(update.probe_id)) {
@@ -135,7 +142,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       diagnostics.finish(event, { result, status: 200 });
     } catch (error) {
       req.resume();
-      const status = error instanceof WebhookRequestError ? error.status : 500;
+      const status = error instanceof WebhookRequestError || error.code === 'EVENT_STORE_UNAVAILABLE' ? error.status : 500;
       if (status === 500) logger.error('Ошибка MAX webhook:', error.message);
       if (!res.destroyed && !res.headersSent) reply(res, status, { ok: false });
       diagnostics.finish(event, { status, phase: operation?.failedPhase });
@@ -166,13 +173,17 @@ export async function startMaxTransport(bot, config, options = {}) {
       });
     });
     server.on('error', onFatal);
-    const result = await api('POST', '/subscriptions', {
-      url: transport.url,
-      update_types: MAX_UPDATE_TYPES,
-      secret: transport.secret,
-    });
-    if (result?.success !== true) throw new Error('MAX не подтвердил регистрацию webhook');
-    logger.log('MAX webhook зарегистрирован:', transport.url);
+    if (!options.existingSubscription) {
+      const result = await api('POST', '/subscriptions', {
+        url: transport.url,
+        update_types: MAX_UPDATE_TYPES,
+        secret: transport.secret,
+      });
+      if (result?.success !== true) throw new Error('MAX не подтвердил регистрацию webhook');
+      logger.log('MAX webhook зарегистрирован:', transport.url);
+    } else {
+      logger.log('MAX webhook: используется существующая подписка:', transport.url);
+    }
     ready = true;
     logger.log(`HTTP-сервер MAX-бота: порт ${server.address().port}, transport=${transport.mode}`);
     return { server, stop };

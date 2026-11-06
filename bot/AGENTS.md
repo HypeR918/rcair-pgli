@@ -12,7 +12,8 @@
 
 - Node.js 22 (по Dockerfile), ES-модули (`"type": "module"` в package.json), без транспиляции и шага сборки.
 - `@maxhub/max-bot-api` — SDK бота MAX (API, middleware, inline-клавиатуры). Long polling в основном боте запрещён.
-- `mysql2/promise` — два пула соединений: база бота (MariaDB) и база GLPI (MySQL).
+- `mysql2/promise` — пулы базы бота/GLPI и отдельный ограниченный пул inbox.
+- `amqplib` — RabbitMQ, publisher confirms и manual ACK; источник истины — MariaDB.
 - `axios` (+ `form-data`) — GLPI REST API, скачивание вложений из MAX, вызовы importer'а.
 - `nodemailer` — отправка кодов верификации email по SMTP.
 - `dotenv` — конфигурация через `.env`.
@@ -21,9 +22,9 @@
 ## Структура проекта
 
 ```
-index.js                  — точка входа: создание Bot, регистрация хендлеров,
-                            запуск транспорта MAX и GLPI polling'ов, /health на PORT (3000),
-                            graceful shutdown (SIGINT/SIGTERM, killSession GLPI, closeDb)
+index.js                  — роли webhook (HTTP → inbox) и worker (сессии/хендлеры/GLPI),
+                            /health на PORT (3000), graceful shutdown
+queue/                    — encrypted inbox, FIFO, leases, Rabbit confirms/consumer и relay
 config/env.js             — чтение .env, requireEnv() проверяет обязательные переменные
 transport/                — только MAX webhook, проверка секрета, HTTP и подписки
   webhookBot.js           — экземпляр SDK с запретом запуска polling и чтения /updates
@@ -78,13 +79,13 @@ query_db.py               — посторонняя dev-утилита, к бо
 
 Полные sequence-диаграммы — в `ARCHITECTURE.md`. Кратко:
 
-1. **Транспорт**: только `BOT_TRANSPORT=webhook`, он же режим по умолчанию. Нужны `WEBHOOK_URL` и `WEBHOOK_SECRET`; маршрут берётся из URL. `polling` отклоняется, `bot.start()` и SDK-методы чтения `/updates` заблокированы. Исходящие сообщения — `ctx.reply` / `bot.api.sendMessageToUser`; API — `https://platform-api2.max.ru`. Опрос GLPI/SQL не получает события MAX и продолжает работать для уведомлений. Подробности — `WEBHOOK_DEPLOY.md`.
-2. **Сессии**: конечный автомат на пользователя (ключ — `max_id`). Состояния перечислены в `utils/constants.js` (`State.*`). `messageController` читает `session.state` и передаёт управление нужному контроллеру. Сессии кэшируются в памяти и дублируются в `bot_sessions` (JSON); перед записью из них вырезаются открытый код верификации и список файлов (`sanitizeForStorage`).
+1. **Транспорт**: только `BOT_TRANSPORT=webhook`. Ingress сохраняет encrypted payload в bot_max_events и возвращает 200 после commit; существующую подписку не меняет и исходящий MAX при старте не вызывает. Worker получает ID через RabbitMQ, исполняет middleware без memory completed-cache, фиксирует SQL результат и ACK. `/updates` запрещён. Инструкция — `RABBITMQ_DEPLOY.md`.
+2. **Сессии**: конечный автомат на пользователя (max_id) принадлежит одному worker. SQL head-of-user и общий user gate задают порядок MAX/SDS; разные пользователи могут идти параллельно. Для приема ingress и SDS общий InnoDB stream lock. Сессии — Map + bot_sessions, открытый код и files не сохраняются; inbox шифруется AES-256-GCM.
 3. **Авторизация**: `/start` → проверка блокировки → поиск `max_id` в базе → ввод email → (если `EMAIL_VERIFICATION_ENABLED=true`) 6-значный код по SMTP (HMAC-хэш, TTL 10 мин, 3 попытки, затем блокировка MAX ID) → импорт/поиск пользователя в GLPI через importer → привязка `max_id` к `glpi_users`. Если пользователь не найден — запускается диалог СДС.
 4. **Заявки**: тема → описание → файлы → подтверждение → `POST /Ticket` в GLPI → документы через `POST /Document` + `POST /Document_Item`. Все пишущие запросы к GLPI идут с `?session_write=true` (это делает `glpiApiRequest` автоматически).
 5. **Фоновые polling'и** (оба `setInterval`, с защитой от повторного входа флагом `*InProgress`):
    - `ticketPolling.js` (`GLPI_TICKET_POLL_MS`, по умолчанию 60000): все заявки на начало прохода страницами по 50; уведомления о новых публичных комментариях (дедупликация через `bot_ticket_followups`), предложенных решениях (статус 5) и закрытии (статус 6). Удалённые из GLPI заявки вычищаются из локальной базы.
-   - `sdsPolling.js` (`GLPI_APPROVAL_POLL_MS`, по умолчанию 60000): решения/комментарии регистрационных тикетов разбираются `parseDecisionText` по словарям `approveWords`/`rejectWords`; при APPROVED — повторный LDAP-импорт и активация, при REJECTED — отказ пользователю.
+   - `sdsPolling.js` (`GLPI_APPROVAL_POLL_MS`, по умолчанию 60000): решения разбираются и записываются как sds_approved/sds_rejected по стабильному request.id. Импорт/уведомление/сессия выполняются consumer, не poller.
 6. **GLPI-сессия**: `initSession` по `GLPI_API_USER_TOKEN` (+ опциональный `App-Token`), токен кэшируется 30 минут, при 401 — один retry с новой сессией. Записи в `glpi_users` (`max_id`, `is_blocked`) идут напрямую в SQL в режиме best-effort; права на заявки дополнительно проверяются по текущим связям заявителей в БД GLPI.
 7. **Importer**: основной бот не имеет доступа к Docker хоста GLPI, поэтому LDAP-импорт вынесен в `glpi-importer.js` — маленький HTTP-сервис (по умолчанию `127.0.0.1:3100`), единственная ручка `POST /internal/import-ldap-user {email}` с `Authorization: Bearer GLPI_IMPORT_SECRET`.
 
@@ -103,6 +104,14 @@ docker run --env-file .env -p 3000:3000 max-bot
 Readiness: `GET http://localhost:3000/health` → `{"ok":true,"service":"max-bot","transport":"webhook"}`. До подтверждённого старта возвращается `503`; это не проверка внешней доставки.
 
 `npm start` запускает `index.js`. Перед развёртыванием прочитайте `SECURITY_CHANGES.md`: там описаны настройки вложений, лимиты, повторная обработка СДС и миграция `bot_verification_limits`.
+
+Теперь обязательны BOT_ROLE=webhook|worker, RABBITMQ_URL и постоянный
+EVENT_PAYLOAD_SECRET (не меньше 32 символов). Helper создаёт отдельный
+rabbitmq.env вне репозитория без изменения существующего .env. Команды обычного
+одиночного запуска выше не поднимают вторую роль; текущий деплой — RABBITMQ_DEPLOY.md.
+CLI `node scripts/events.mjs status` не загружает .env и не выводит payload.
+Обычные сбои /start,/menu,bot_started допускают до 5 повторов; неизвестные записи
+GLPI и прерванные STARTED не повторяются автоматически (FAILED/UNCERTAIN).
 
 Внутренний `GET /diagnostics` показывает приём POST, отказы, ошибки и активные запросы;
 Nginx его не публикует. `sudo docker exec -i max_bot node scripts/diagnose-webhook.mjs --watch 30`
@@ -160,6 +169,10 @@ HTTP 200 без него считается ошибкой MAX_API_UNCONFIRMED. 
 ## Деплой
 
 - Единственный прод-артефакт — Docker-образ из корневого `Dockerfile` (`node:22-bookworm-slim`, `npm ci --omit=dev`, `USER node`, `HEALTHCHECK` по `/health`, `TZ=Asia/Tomsk`, `CMD ["node", "index.js"]`).
+- `deploy/Dockerfile.queue` обновляет существующий Node-образ без сети: сохраняет
+  CA/прежние зависимости и добавляет проверяемый vendor AMQP runtime. Helper
+  `deploy/use-rabbitmq.sh` запускает max_bot + max_bot_worker + Rabbit без DB down.
+  Откат к старому образу разрешён только после полного drain и остановки producers.
 - Корневого `docker-compose.yml` нет (compose-файл в `miniproject/` относится к прототипу). По `ARCHITECTURE.md` база бота — отдельный MariaDB-контейнер, доступный с хоста на `127.0.0.1:3307`; GLPI и SMTP — внешние сервисы.
 - `deploy/docker-compose.nginx.yml` добавляется к существующему Compose на сервере: Nginx и бот находятся в общей сети, upstream — `max-bot:3000` с обновлением Docker DNS. `deploy/use-docker-nginx.sh` переключает хостовый Nginx на Docker и поддерживает `rollback`, не перезапуская бота/БД. Подробности — `WEBHOOK_DEPLOY.md`; `bash test/docker-nginx.smoke.sh` проверяет настоящие контейнеры без рабочих секретов.
 - `glpi-importer.js` развёртывается отдельно на хосте GLPI (нужен доступ к `docker exec`).

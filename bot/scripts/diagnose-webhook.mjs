@@ -108,6 +108,10 @@ export async function diagnoseWebhook({
   const events = MAX_UPDATE_TYPES.reduce((sum, type) => sum + after.types[type] - before.types[type], 0);
   log(`Счётчики: вход=${after.received}, отказ=${after.rejected}, ошибки=${after.failed}, активные=${after.active}, старейший=${after.oldest_active_ms} мс`);
   log(`События MAX с запуска: ${MAX_UPDATE_TYPES.map(type => `${type}=${after.types[type]}`).join(', ')}`);
+  if (after.queue) {
+    log(`Ingress: новых событий сохранено=${after.queued}, очередь=${JSON.stringify(after.queue)}`);
+    log('Обработку и ответы проверяйте в max_bot_worker и node scripts/events.mjs status; HTTP200 подтверждает запись в БД.');
+  }
   log(`Ответы на события MAX с запуска: попыток=${after.replies.attempted}, подтверждено MAX=${after.replies.confirmed}, ошибок=${after.replies.failed}`);
   if (after.recent_events.length) {
     log(`Последние события MAX (до 5): ${JSON.stringify(after.recent_events.slice(-5))}`);

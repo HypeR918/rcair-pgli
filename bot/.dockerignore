@@ -10,3 +10,5 @@ deploy.log
 Dockerfile
 .dockerignore
 .gitignore
+miniproject
+python_webhook

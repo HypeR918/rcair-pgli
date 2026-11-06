@@ -2,9 +2,8 @@
 import { withOperation } from './operationContext.js';
 
 const pending = new Map();
-export async function serializeUserUpdates(ctx, next) {
-  if (!ctx.user?.user_id) return next();
-  const key = String(ctx.user.user_id);
+export async function runForUser(userId, next) {
+  const key = String(userId);
   const previous = pending.get(key) || Promise.resolve();
   let release;
   const current = new Promise(resolve => { release = resolve; });
@@ -15,4 +14,9 @@ export async function serializeUserUpdates(ctx, next) {
     release();
     if (pending.get(key) === current) pending.delete(key);
   }
+}
+
+export async function serializeUserUpdates(ctx, next) {
+  if (!ctx.user?.user_id) return next();
+  return runForUser(ctx.user.user_id, next);
 }

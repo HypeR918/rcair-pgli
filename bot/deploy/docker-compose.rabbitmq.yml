@@ -1,0 +1,45 @@
+services:
+  rabbitmq:
+    image: rabbitmq:4.2-alpine
+    container_name: ${MAX_BOT_RABBIT_CONTAINER_NAME:-max_bot_rabbitmq}
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_DEFAULT_USER:?Запустите deploy/use-rabbitmq.sh}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_DEFAULT_PASS:?Запустите deploy/use-rabbitmq.sh}
+    volumes:
+      - max-bot-rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 12
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+  max-bot:
+    image: ${MAX_BOT_QUEUE_IMAGE:-max-glpi-bot:webhook}
+    environment:
+      BOT_ROLE: webhook
+      RABBITMQ_URL: ${RABBITMQ_URL:?Запустите deploy/use-rabbitmq.sh}
+      EVENT_PAYLOAD_SECRET: ${EVENT_PAYLOAD_SECRET:?Запустите deploy/use-rabbitmq.sh}
+    stop_grace_period: 30s
+  max-bot-worker:
+    extends:
+      file: ${MAX_BOT_QUEUE_BASE:?Запустите deploy/use-rabbitmq.sh}
+      service: max-bot
+    image: ${MAX_BOT_QUEUE_IMAGE:-max-glpi-bot:webhook}
+    container_name: ${MAX_BOT_WORKER_CONTAINER_NAME:-max_bot_worker}
+    environment:
+      BOT_ROLE: worker
+      RABBITMQ_URL: ${RABBITMQ_URL:?Запустите deploy/use-rabbitmq.sh}
+      EVENT_PAYLOAD_SECRET: ${EVENT_PAYLOAD_SECRET:?Запустите deploy/use-rabbitmq.sh}
+    ports: !reset []
+    depends_on:
+      rabbitmq:
+        condition: service_healthy
+    stop_grace_period: 190s
+volumes:
+  max-bot-rabbitmq-data:

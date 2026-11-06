@@ -2,7 +2,7 @@ import axios from 'axios';
 import { env } from '../config/env.js';
 import { normalizeEmail, sleep } from '../utils/textUtils.js';
 import { findGlpiUserAfterSdsImport } from './dbService.js';
-import { withOperation } from '../utils/operationContext.js';
+import { recordAmbiguousEffect, withOperation } from '../utils/operationContext.js';
 
 export async function requestGlpiLdapImport(email) {
   const importUrl = String(env.GLPI_IMPORT_URL || '').trim();
@@ -45,6 +45,7 @@ export async function requestGlpiLdapImport(email) {
       }
     ));
 
+    if (res.status >= 500) recordAmbiguousEffect('glpi.import');
     if (res.status >= 200 && res.status < 300 && res.data?.ok === true) {
       console.log('=== GLPI CLI IMPORT SUCCESS ===');
       console.log('email:', normalizedEmail);
@@ -57,6 +58,7 @@ export async function requestGlpiLdapImport(email) {
     console.error('data:', res.data);
     return false;
   } catch (err) {
+    recordAmbiguousEffect('glpi.import');
     console.error('=== GLPI CLI IMPORT REQUEST ERROR ===');
     console.error(err.message);
 

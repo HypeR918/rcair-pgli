@@ -1,0 +1,30 @@
+{
+  "archive_sha256": "0e785d00886f1c0f229de723b61219082243ff94bb81b9e3a448476e6b604dde",
+  "packages": {
+    "amqplib": {
+      "version": "0.10.9",
+      "integrity": "sha512-jwSftI4QjS3mizvnSnOrPGYiUnm1vI2OP1iXeOUz5pb74Ua0nbf6nPyyTzuiCLEE3fMpaJORXh2K/TQ08H5xGA==",
+      "resolved": "https://registry.npmjs.org/amqplib/-/amqplib-0.10.9.tgz"
+    },
+    "buffer-more-ints": {
+      "version": "1.0.0",
+      "integrity": "sha512-EMetuGFz5SLsT0QTnXzINh4Ksr+oo4i+UGTXEshiGCQWnsgSs7ZhJ8fzlwQ+OzEMs0MpDAMr1hxnblp5a4vcHg==",
+      "resolved": "https://registry.npmjs.org/buffer-more-ints/-/buffer-more-ints-1.0.0.tgz"
+    },
+    "url-parse": {
+      "version": "1.5.10",
+      "integrity": "sha512-WypcfiRhfeUP9vvF0j6rw0J3hrWrw6iZv3+22h6iRMJ/8z1Tj6XfLP4DsUix5MhMPnXpiHDoKyoZ/bdCkwBCiQ==",
+      "resolved": "https://registry.npmjs.org/url-parse/-/url-parse-1.5.10.tgz"
+    },
+    "querystringify": {
+      "version": "2.2.0",
+      "integrity": "sha512-FIqgj2EUvTa7R50u0rGsyTftzjYmv/a3hO345bZNrqabNqjtgiDMgmo4mkUjd+nzU5oF3dClKqFIPUKybUyqoQ==",
+      "resolved": "https://registry.npmjs.org/querystringify/-/querystringify-2.2.0.tgz"
+    },
+    "requires-port": {
+      "version": "1.0.0",
+      "integrity": "sha512-KigOCHcocU3XODJxsu8i/j8T9tzT4adHiecwORRQ0ZZFcp7ahwXuRU1m+yuO90C5ZUyGeGfocHDI14M3L3yDAQ==",
+      "resolved": "https://registry.npmjs.org/requires-port/-/requires-port-1.0.0.tgz"
+    }
+  }
+}

@@ -5,7 +5,7 @@ export function createWebhookDiagnostics(logger) {
   const startedAt = Date.now();
   const instanceId = randomUUID();
   const active = new Map();
-  const counts = { received: 0, authorized: 0, processed: 0, duplicate: 0, ignored: 0, rejected: 0, failed: 0 };
+  const counts = { received: 0, authorized: 0, processed: 0, queued: 0, duplicate: 0, ignored: 0, rejected: 0, failed: 0 };
   const types = Object.fromEntries([...MAX_UPDATE_TYPES, 'unsupported'].map(type => [type, 0]));
   const replies = { attempted: 0, confirmed: 0, failed: 0 };
   const recent = [];
@@ -44,6 +44,10 @@ export function createWebhookDiagnostics(logger) {
       replies[result]++;
       log({ event, stage: 'reply', result });
     },
+    persisted(event, saved) {
+      active.get(event).eventId = saved.id;
+      log({ event, stage: 'persisted', event_id: saved.id, duplicate: saved.duplicate });
+    },
     finish(event, { status, result, reason, phase }) {
       const now = Date.now();
       const entry = active.get(event);
@@ -55,7 +59,7 @@ export function createWebhookDiagnostics(logger) {
       else if (stage === 'failed') counts.failed++;
       else counts[result]++;
       const summary = {
-        event, ...(entry.metadata && entry.metadata), status, ...(result && { result }),
+        event, ...(entry.eventId && { event_id: entry.eventId }), ...(entry.metadata && entry.metadata), status, ...(result && { result }),
         ...(stage === 'failed' && { phase: phase || entry.phase }), duration_ms,
         replies: { ...entry.replies },
       };
@@ -64,7 +68,7 @@ export function createWebhookDiagnostics(logger) {
         if (recent.length > 20) recent.shift();
       }
       log({ event, stage, status, ...(result && { result }), ...(reason && { reason }),
-        ...(stage === 'failed' && { phase: phase || entry.phase }), duration_ms, replies: { ...entry.replies } });
+        ...(stage === 'failed' && { phase: phase || entry.phase }), ...(entry.eventId && { event_id: entry.eventId }), duration_ms, replies: { ...entry.replies } });
     },
     snapshot() {
       const now = Date.now();

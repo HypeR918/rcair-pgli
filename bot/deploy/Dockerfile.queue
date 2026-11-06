@@ -1,0 +1,14 @@
+ARG BASE_BOT_IMAGE=max-glpi-bot:webhook
+FROM ${BASE_BOT_IMAGE}
+USER root
+WORKDIR /app
+# Сохраняем Node22, существующие зависимости и доверенные CA рабочего образа.
+COPY --chown=node:node . .
+RUN rm -rf /app/miniproject /app/python_webhook
+RUN node scripts/verify-amqp-vendor.mjs
+RUN rm -rf node_modules/amqplib node_modules/buffer-more-ints node_modules/url-parse node_modules/querystringify node_modules/requires-port
+ADD --chown=node:node vendor/amqp-runtime.tgz /app/node_modules/
+RUN node scripts/verify-amqp-vendor.mjs --installed \
+    && node --input-type=module -e "import 'amqplib'; import 'mysql2/promise'; import '@maxhub/max-bot-api'; if(process.versions.node.split('.')[0]!=='22') process.exit(1)"
+USER node
+CMD ["node", "index.js"]

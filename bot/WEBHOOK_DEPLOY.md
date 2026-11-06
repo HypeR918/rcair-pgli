@@ -1,5 +1,9 @@
 # Webhook GLPI-бота MAX
 
+Для текущей версии с таблицей событий и RabbitMQ используйте
+[RABBITMQ_DEPLOY.md](RABBITMQ_DEPLOY.md). Ниже сохранены прежние инструкции
+для синхронного Node и Nginx; обновлять только max_bot после миграции нельзя.
+
 Публичный адрес: **https://botsupport.gov70.ru/max/callback/**.
 
 ```text

@@ -1,3 +1,4 @@
+import { MaxError } from '@maxhub/max-bot-api';
 import { env } from '../config/env.js';
 import { State } from '../utils/constants.js';
 import { normalizeEmail } from '../utils/textUtils.js';
@@ -33,6 +34,10 @@ import {
   setSession,
   deleteSession,
 } from '../state/sessionStore.js';
+
+function isMaxDeliveryError(error) {
+  return error instanceof MaxError || String(error.code || '').startsWith('MAX_API_');
+}
 
 export async function showWelcomeAndMenu(ctx, user) {
   const maxUserId = ctx.user.user_id;
@@ -173,6 +178,7 @@ export async function entryPoint(ctx) {
       }
     );
   } catch (error) {
+    if (isMaxDeliveryError(error)) throw error;
     console.error('entryPoint error:', error.message);
     await ctx.reply('Ошибка подключения к базе данных\nПовторите попытку позже');
   }
@@ -261,6 +267,7 @@ async function handleStart(ctx, source) {
   try {
     await entryPoint(ctx);
   } catch (error) {
+    if (isMaxDeliveryError(error)) throw error;
     console.error(`[START] ${source} error:`, error.message);
 
     try {

@@ -3,14 +3,20 @@ import { AsyncLocalStorage } from 'node:async_hooks';
 const storage = new AsyncLocalStorage();
 
 export function createOperationScope(report, reportReply = () => {}) {
-  const state = { phase: 'handler', failures: new Map(), terminal: null, report, reportReply };
+  const state = { phase: 'handler', failures: new Map(), terminal: null, report, reportReply, ambiguousEffects: new Set() };
   return {
     run: action => storage.run(state, async () => {
       try { return await withOperation('handler', action); }
       catch (error) { state.terminal = { error }; throw error; }
     }),
     get failedPhase() { return state.terminal ? state.failures.get(state.terminal.error) ?? null : null; },
+    get ambiguousEffects() { return [...state.ambiguousEffects]; },
   };
+}
+
+// Неизвестный результат POST нельзя превращать в безопасный повтор через catch.
+export function recordAmbiguousEffect(kind) {
+  storage.getStore()?.ambiguousEffects.add(kind);
 }
 
 // Только исход отправки; текст, адресат и ответ MAX в диагностику не передаются.

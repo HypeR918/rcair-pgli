@@ -201,6 +201,18 @@ function controllerMocks(sessions) {
   };
 }
 
+test('/start: ошибка MAX не запускает каскад отправок об ошибке БД и запуска', async t => {
+  const sessions = new Map();
+  const controller = await loadIsolated('controllers/userController.js', controllerMocks(sessions));
+  const f = await fixture(t, bot => controller.registerUserHandlers(bot));
+  f.setMode('reject');
+  assert.equal(await f.deliver(message('start.outgoing-failed')), 500);
+  assert.equal(f.replies.length, 1);
+  f.setMode('normal');
+  assert.equal(await f.deliver(message('start.outgoing-failed')), 200);
+  assert.equal(f.replies.length, 2);
+});
+
 for (const state of [State.WAIT_NEW_TICKET_TITLE, State.WAIT_NEW_TICKET_DESCRIPTION]) {
   test(`${state}: отказ отправки и повтор mid сохраняют единственный переход диалога`, async t => {
     const sessions = new Map([['123', {

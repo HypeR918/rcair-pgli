@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import FormData from 'form-data';
 import rawAxios from 'axios';
-import { withOperation } from '../utils/operationContext.js';
+import { recordAmbiguousEffect, withOperation } from '../utils/operationContext.js';
 import { env } from '../config/env.js';
 import { GlpiTicketStatus } from '../utils/constants.js';
 import {
@@ -11,7 +11,17 @@ import {
 } from '../utils/textUtils.js';
 
 // Этап ожидания без URL, токенов и параметров запроса.
-const axios = (...args) => withOperation('glpi.api', () => rawAxios(...args));
+const axios = (...args) => withOperation('glpi.api', async () => {
+  const write = ['post', 'put', 'patch', 'delete'].includes(String(args[0]?.method || '').toLowerCase());
+  try {
+    const response = await rawAxios(...args);
+    if (write && response.status >= 500) recordAmbiguousEffect('glpi.write');
+    return response;
+  } catch (error) {
+    if (write) recordAmbiguousEffect('glpi.write');
+    throw error;
+  }
+});
 axios.get = (...args) => withOperation('glpi.api', () => rawAxios.get(...args));
 
 function getGlpiApiBaseUrl() {
