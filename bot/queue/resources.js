@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { createDbPool } from '../services/dbPool.js';
 import { createEventCodec } from './eventCodec.js';
 import { createEventStore } from './eventStore.js';
+import { createBroadcastStore } from '../broadcast/store.js';
 
 export function createQueueResources(values, config) {
   const database = values.BOT_DB_NAME || values.DB_NAME;
@@ -12,7 +13,9 @@ export function createQueueResources(values, config) {
     password: values.BOT_DB_PASSWORD || values.DB_PASSWORD,
     database, connectionLimit: 4, supportBigNumbers: true, bigNumberStrings: true,
   }, { name: 'events', queryTimeoutMs: 5000, acquireTimeoutMs: 3000 });
-  const store = createEventStore(pool, { codec: createEventCodec(config.secret) });
+  const codec = createEventCodec(config.secret);
+  const store = createEventStore(pool, { codec });
+  const broadcasts = createBroadcastStore(pool, codec);
   async function acquireWorkerLock(onLost) {
     const name = `max-worker:${createHash('sha256').update(database).digest('hex').slice(0, 32)}`;
     const connection = await pool.getConnection();
@@ -38,5 +41,5 @@ export function createQueueResources(values, config) {
       };
     } catch (error) { clearInterval(timer); connection.release(); throw error; }
   }
-  return { store, pool, acquireWorkerLock };
+  return { store, broadcasts, pool, acquireWorkerLock };
 }

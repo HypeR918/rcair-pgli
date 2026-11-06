@@ -13,6 +13,7 @@ export MAX_BOT_BIND_IP=127.0.0.1 MAX_BOT_HTTP_PORT=0 MAX_BOT_HTTPS_PORT=0
 export RABBITMQ_DEFAULT_USER=fixture RABBITMQ_DEFAULT_PASS=offline-test
 export RABBITMQ_URL=amqp://fixture:offline-test@rabbitmq:5672
 export EVENT_PAYLOAD_SECRET=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+export BROADCAST_API_SECRET=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 compose() { docker compose --env-file /dev/null -p "$project" -f "$test_dir/base.yml" \
   -f "$bot_dir/deploy/docker-compose.nginx.yml" -f "$bot_dir/deploy/docker-compose.rabbitmq.yml" "$@"; }
 cleanup() {
@@ -164,3 +165,56 @@ compose exec -T max-bot node --input-type=module -e "const d=await(await fetch('
 [ "$nginx_id" = "$(compose ps -q nginx)" ]
 stats
 echo 'Проверено: два Node-процесса, TLS, быстрый ACK, дубликаты, падение RabbitMQ, восстановление, kill worker → UNCERTAIN без повторного handler.'
+
+# Только фиктивные пользователи в временной БД и локальная HTTPS-заглушка MAX.
+compose exec -T max-bot-db mariadb -uroot bot -e "INSERT INTO bot_users (max_id, glpi_user_id, is_blocked) VALUES
+  (701,701,0),(702,702,0),(703,703,1),(704,NULL,0),(705,705,0);
+  INSERT INTO blocked_max_ids (max_id) VALUES (705)"
+create_broadcast() {
+  compose exec -T max-bot node --input-type=module -e '
+    const r=await fetch("http://127.0.0.1:3000/internal/broadcasts", {method:"POST",
+      headers:{"Authorization":`Bearer ${process.env.BROADCAST_API_SECRET}`,"Content-Type":"application/json","Idempotency-Key":process.argv[1]},
+      body:JSON.stringify({text:"Рассылка fixture"})});
+    if(r.status!==202)throw new Error(`broadcast HTTP ${r.status}`);
+    console.log(JSON.stringify(await r.json()));' "$1"
+}
+broadcast_status() { compose exec -T max-bot node scripts/broadcasts.mjs status "$1"; }
+wait_broadcast() {
+  for attempt in $(seq 1 100); do
+    if broadcast_status "$1" | python3 -c 'import json,sys; d=json.load(sys.stdin); sys.exit(0 if d["counts"][sys.argv[1]]>=int(sys.argv[2]) else 1)' "$2" "$3"; then return; fi
+    sleep 0.2
+  done
+  return 1
+}
+compose exec -T max-bot node --input-type=module -e '
+  const r=await fetch("http://127.0.0.1:3000/internal/broadcasts", {method:"POST",body:"{}"});
+  if(r.status!==401)throw new Error("broadcast auth");'
+[ "$(curl --noproxy botsupport.gov70.ru --silent --show-error --cacert "$test_dir/fullchain.pem" \
+  --resolve "botsupport.gov70.ru:$https_port:127.0.0.1" --connect-timeout 2 --max-time 5 \
+  -X POST -o /dev/null -w '%{http_code}' "https://botsupport.gov70.ru:$https_port/internal/broadcasts")" = 404 ]
+compose stop max-bot-worker
+broadcast="$(create_broadcast smoke-broadcast-01)"
+job_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$broadcast")"
+create_broadcast smoke-broadcast-01 | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["created"] is False'
+wait_broadcast "$job_id" pending 2
+mode hold-broadcast
+compose up -d --no-deps --no-build --wait --wait-timeout 120 max-bot-worker
+wait_broadcast "$job_id" processing 1
+[ "$(deliver during-broadcast 789)" = 200 ]
+wait_state done 6
+compose kill -s SIGKILL max-bot-worker
+mode normal
+compose exec -T max-bot-db mariadb -uroot bot -e "UPDATE bot_broadcast_deliveries SET lease_until=DATE_SUB(NOW(6),INTERVAL 1 SECOND) WHERE state='processing'"
+compose up -d --no-deps --no-build --wait --wait-timeout 120 max-bot-worker
+wait_broadcast "$job_id" uncertain 1
+wait_broadcast "$job_id" done 1
+compose exec -T max-bot node --input-type=module -e '
+  const d=await(await fetch("https://platform-api2.max.ru/stats")).json();
+  if(JSON.stringify(d.broadcast_users.sort())!==JSON.stringify(["701","702"]))throw new Error("broadcast duplicate/audience");'
+create_broadcast smoke-broadcast-01 | python3 -c 'import json,sys; assert json.load(sys.stdin)["created"] is False'
+broadcast="$(create_broadcast smoke-broadcast-02)"
+job_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$broadcast")"
+wait_broadcast "$job_id" done 2
+broadcast_status "$job_id"
+[ "$nginx_id" = "$(compose ps -q nginx)" ]
+echo 'Проверено: закрытый broadcast API, snapshot и idempotency, отдельная очередь, диалоги во время зависшей рассылки, crash без автоматического повтора и завершение следующего задания.'

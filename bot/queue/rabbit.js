@@ -4,6 +4,17 @@ function unavailable() {
   const error = new Error('RabbitMQ недоступен'); error.code = 'RABBITMQ_UNAVAILABLE'; return error;
 }
 
+// При остановке брокер может не ответить на cancel/close. Ожидание самих
+// обработчиков выполняется отдельно до закрытия соединения.
+async function closeRpc(action) {
+  let timer;
+  try {
+    return await Promise.race([action(), new Promise((_, reject) => {
+      timer = setTimeout(() => reject(unavailable()), 2000);
+    })]);
+  } finally { clearTimeout(timer); }
+}
+
 export async function connectRabbit({ url, queue = 'max.webhook.events.v1', prefetch = 4 }, { onClose = () => {} } = {}) {
   let connection;
   let closing = false;
@@ -14,7 +25,7 @@ export async function connectRabbit({ url, queue = 'max.webhook.events.v1', pref
     if (!closing && !notified) {
       notified = true;
       onClose();
-      connection?.close().catch(() => {});
+      closeRpc(() => connection?.close()).catch(() => {});
     }
   };
   try {
@@ -39,7 +50,7 @@ export async function connectRabbit({ url, queue = 'max.webhook.events.v1', pref
       await new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           reject(unavailable());
-          connection.close().catch(() => {});
+          closeRpc(() => connection.close()).catch(() => {});
         }, 5000);
         const done = error => { clearTimeout(timer); error ? reject(unavailable()) : resolve(); };
         try {
@@ -53,7 +64,7 @@ export async function connectRabbit({ url, queue = 'max.webhook.events.v1', pref
       publish: send,
       async consume(handler) {
         const result = await consume.consume(queue, message => {
-          if (!message) { if (!closing) onClose(); return; }
+          if (!message) { if (!closing) lost(); return; }
           let id;
           try {
             if (message.content.length > 100) throw new Error();
@@ -71,17 +82,18 @@ export async function connectRabbit({ url, queue = 'max.webhook.events.v1', pref
         tag = result.consumerTag;
       },
       async cancel() {
-        if (tag && !closed) { const current = tag; tag = null; await consume.cancel(current); }
+        if (tag && !closed) { const current = tag; tag = null; await closeRpc(() => consume.cancel(current)); }
       },
       async close() {
+        if (closed || closing) return;
         closing = true;
-        try { if (tag && !closed) await consume.cancel(tag); } catch {}
-        try { await connection.close(); } catch {}
+        try { if (tag && !closed) await closeRpc(() => consume.cancel(tag)); } catch {}
+        try { await closeRpc(() => connection.close()); } catch {}
       },
     };
   } catch {
     closing = true;
-    try { await connection?.close(); } catch {}
+    try { await closeRpc(() => connection?.close()); } catch {}
     throw unavailable();
   }
 }

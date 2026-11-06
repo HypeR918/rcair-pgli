@@ -10,11 +10,14 @@ try {
   const action = args[0] || 'status';
   if (action === 'init' && args.length === 1) {
     await resources.store.ensureSchema();
-    console.log('Таблица bot_max_events подготовлена.');
+    await resources.broadcasts.ensureSchema();
+    console.log('Таблицы событий MAX и рассылок подготовлены.');
   } else if (['status', 'assert-drained'].includes(action) && args.length <= 1) {
     const status = await resources.store.stats();
-    console.log(JSON.stringify({ ...status, problems: await resources.store.problems(), recent: await resources.store.recent() }, null, 2));
-    if (action === 'assert-drained' && !await resources.store.assertDrained()) process.exitCode = 2;
+    console.log(JSON.stringify({ ...status, problems: await resources.store.problems(), recent: await resources.store.recent(),
+      broadcasts: await resources.broadcasts.stats() }, null, 2));
+    if (action === 'assert-drained'
+        && (!await resources.store.assertDrained() || !await resources.broadcasts.assertDrained())) process.exitCode = 2;
   } else if (action === 'resolve') {
     const values = new Map();
     for (let i = 1; i < args.length; i++) {

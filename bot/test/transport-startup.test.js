@@ -33,6 +33,7 @@ async function bootstrap(t, role = 'webhook', fail = false) {
     './queue/config.js': { readQueueConfig: () => ({ role }) },
     './queue/resources.js': { createQueueResources: () => ({
       store: { ensureSchema: async () => calls.push('event-schema'), accept: async () => ({ id: '1' }) },
+      broadcasts: { ensureSchema: async () => calls.push('broadcast-schema') },
       pool: { end: async () => calls.push('close-events') },
       acquireWorkerLock: async () => { calls.push('worker-lock'); return async () => calls.push('release-lock'); },
     }) },
@@ -45,6 +46,9 @@ async function bootstrap(t, role = 'webhook', fail = false) {
     } },
     './queue/statusServer.js': { startWorkerStatus: async () => {
       calls.push('worker-health'); return { stop: async () => calls.push('stop-worker-health') };
+    } },
+    './broadcast/processor.js': { startBroadcastProcessor: () => {
+      calls.push('broadcasts'); return { snapshot: () => ({}), stop: async () => calls.push('stop-broadcasts') };
     } },
     './transport/maxApi.js': { createMaxApi: () => async () => { calls.push('me'); return { user_id: 999 }; } },
     './state/sessionStore.js': { loadAllSessions: async () => calls.push('sessions') },
@@ -68,7 +72,7 @@ async function bootstrap(t, role = 'webhook', fail = false) {
 test('ingress подготавливает inbox и relay; не загружает сессии и не запускает GLPI polling', async t => {
   const f = await bootstrap(t);
   assert.deepEqual(f.calls, [
-    'validate', 'event-schema', 'transport',
+    'validate', 'event-schema', 'broadcast-schema', 'transport',
   ]);
   f.release();
   await new Promise(resolve => setImmediate(resolve));
@@ -81,15 +85,16 @@ test('ingress подготавливает inbox и relay; не загружае
 
 test('worker владеет сессиями и поллерами; запуск задач после захвата worker lock и consumer', async t => {
   const f = await bootstrap(t, 'worker');
-  assert.deepEqual(f.calls, ['validate', 'event-schema', 'worker-lock', 'rabbit', 'schema', 'sessions',
+  assert.deepEqual(f.calls, ['validate', 'event-schema', 'broadcast-schema', 'worker-lock', 'rabbit', 'schema', 'sessions',
     'user-handlers', 'message-handler', 'ticket-actions', 'me', 'worker']);
   f.release();
   await new Promise(resolve => setImmediate(resolve));
-  assert.deepEqual(f.calls.slice(-5), ['relay', 'worker-health', 'cleanup', 'sds:10000', 'tickets:20000']);
+  assert.deepEqual(f.calls.slice(-6), ['relay', 'broadcasts', 'worker-health', 'cleanup', 'sds:10000', 'tickets:20000']);
   assert(!f.calls.includes('transport'));
   await f.signals.get('SIGTERM')();
   assert(f.calls.indexOf('stop-worker') < f.calls.indexOf('close-db'));
   assert(f.calls.includes('release-lock'));
+  assert(f.calls.includes('stop-broadcasts'));
 });
 
 test('ошибка consumer не запускает фоновые GLPI-опросы и завершает worker с ошибкой', async t => {

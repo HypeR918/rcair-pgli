@@ -110,6 +110,11 @@ EVENT_PAYLOAD_SECRET (не меньше 32 символов). Helper созда�
 rabbitmq.env вне репозитория без изменения существующего .env. Команды обычного
 одиночного запуска выше не поднимают вторую роль; текущий деплой — RABBITMQ_DEPLOY.md.
 CLI `node scripts/events.mjs status` не загружает .env и не выводит payload.
+Рассылки: `broadcast/` (локальный API ingress, snapshot адресатов, encrypted jobs,
+отдельные Rabbit relay/consumer с prefetch=1 и лимитом 2/с). API закрыт отдельным
+BROADCAST_API_SECRET и не проксируется публичным Nginx. Команды и ограничения —
+BROADCAST_DEPLOY.md. `events.mjs assert-drained` учитывает также рассылки;
+проблемные отправки разрешаются через scripts/broadcasts.mjs.
 Обычные сбои /start,/menu,bot_started допускают до 5 повторов; неизвестные записи
 GLPI и прерванные STARTED не повторяются автоматически (FAILED/UNCERTAIN).
 

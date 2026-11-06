@@ -82,6 +82,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       reply(res, 200, { ready, ...diagnostics.snapshot(), ...(options.queueSnapshot && { queue: options.queueSnapshot() }) });
       return;
     }
+    if (options.adminApi && await options.adminApi(req, res)) return;
     if (path !== transport.path) {
       req.resume();
       reply(res, 404, { ok: false });

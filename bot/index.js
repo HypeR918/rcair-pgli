@@ -12,6 +12,8 @@ import { connectRabbit } from './queue/rabbit.js';
 import { startEventRelay } from './queue/relay.js';
 import { startEventWorker } from './queue/worker.js';
 import { startWorkerStatus } from './queue/statusServer.js';
+import { createBroadcastApi } from './broadcast/api.js';
+import { startBroadcastProcessor } from './broadcast/processor.js';
 import { handleApprovedSdsRequest, handleRejectedSdsRequest } from './controllers/sdsController.js';
 
 import { env, requireEnv } from './config/env.js';
@@ -61,6 +63,7 @@ let transport;
 let relay;
 let worker;
 let workerStatus;
+let broadcastProcessor;
 let rabbit;
 let releaseWorkerLock;
 const timers = [];
@@ -68,10 +71,12 @@ const timers = [];
 async function startApp() {
   console.log(`Запуск MAX-бота: role=${queueConfig.role}`);
   await resources.store.ensureSchema();
+  await resources.broadcasts.ensureSchema();
   if (queueConfig.role === 'webhook') {
     transport = await startMaxTransport(bot, env, {
       acceptUpdate: resources.store.accept, queueSnapshot: () => ({ mode: 'inbox', publisher: 'worker' }),
       existingSubscription: true,
+      adminApi: createBroadcastApi(resources.broadcasts, process.env.BROADCAST_API_SECRET || ''),
     });
   } else {
     // Единственный владелец кэша сессий и фоновых задач — worker.
@@ -93,7 +98,11 @@ async function startApp() {
       return bot.middleware()(new WebhookContext(update, bot.api, bot.botInfo), () => Promise.resolve());
     });
     relay = startEventRelay(resources.store, queueConfig);
-    workerStatus = await startWorkerStatus(env.PORT, () => ({ ...worker.snapshot(), relay: relay.snapshot() }));
+    broadcastProcessor = startBroadcastProcessor(resources.broadcasts, queueConfig, env.BOT_TOKEN, {
+      rate: Number(process.env.BROADCAST_RATE_PER_SECOND || 2),
+    });
+    workerStatus = await startWorkerStatus(env.PORT, () => ({ ...worker.snapshot(), relay: relay.snapshot(),
+      broadcasts: broadcastProcessor.snapshot() }));
     timers.push(await startAttachmentCleanup());
     timers.push(startSdsPolling(bot, env.GLPI_APPROVAL_POLL_MS, { enqueueDecision: resources.store.accept }));
     timers.push(startTicketPolling(bot, env.GLPI_TICKET_POLL_MS));
@@ -116,8 +125,10 @@ async function shutdown(exitCode = 0) {
   const deadline = setTimeout(() => process.exit(exitCode), queueConfig.role === 'worker' ? 180000 : 20000);
   deadline.unref();
   for (const timer of timers) clearInterval(timer);
-  for (const stop of [() => transport?.stop(), () => workerStatus?.stop(), () => worker?.stop(),
-    () => rabbit?.close(), () => relay?.stop(), () => releaseWorkerLock?.()]) {
+  for (const [name, stop] of [['http', () => transport?.stop()], ['status', () => workerStatus?.stop()],
+    ['consumers', () => Promise.allSettled([worker?.stop(), broadcastProcessor?.stop()])],
+    ['rabbit', () => rabbit?.close()], ['relay', () => relay?.stop()], ['lock', () => releaseWorkerLock?.()]]) {
+    console.log(`[SHUTDOWN] ${name}`);
     try { await stop(); } catch { console.error('Ошибка остановки компонента очереди'); }
   }
 

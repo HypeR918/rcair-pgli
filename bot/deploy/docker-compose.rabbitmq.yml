@@ -23,6 +23,7 @@ services:
     image: ${MAX_BOT_QUEUE_IMAGE:-max-glpi-bot:webhook}
     environment:
       BOT_ROLE: webhook
+      BROADCAST_API_SECRET: ${BROADCAST_API_SECRET:-}
       RABBITMQ_URL: ${RABBITMQ_URL:?Запустите deploy/use-rabbitmq.sh}
       EVENT_PAYLOAD_SECRET: ${EVENT_PAYLOAD_SECRET:?Запустите deploy/use-rabbitmq.sh}
     stop_grace_period: 30s
@@ -37,6 +38,7 @@ services:
       RABBITMQ_URL: ${RABBITMQ_URL:?Запустите deploy/use-rabbitmq.sh}
       EVENT_PAYLOAD_SECRET: ${EVENT_PAYLOAD_SECRET:?Запустите deploy/use-rabbitmq.sh}
       EVENT_RELAY_INTERVAL_MS: ${EVENT_RELAY_INTERVAL_MS:-200}
+      BROADCAST_RATE_PER_SECOND: ${BROADCAST_RATE_PER_SECOND:-2}
     ports: !reset []
     depends_on:
       rabbitmq:

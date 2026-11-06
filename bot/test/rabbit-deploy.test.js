@@ -13,7 +13,7 @@ async function run(t, failure = '', action = 'switch') {
   await mkdir(join(dir, 'bin'));
   if (['rollback', 'update'].includes(action)) await writeFile(join(dir, '.rabbitmq-node-state'), `${image}\n`);
   if (action === 'update') {
-    await writeFile(join(dir, 'rabbitmq.env'), 'RABBITMQ_DEFAULT_USER=offline\n');
+    await writeFile(join(dir, 'rabbitmq.env'), `RABBITMQ_DEFAULT_USER=offline\nBROADCAST_API_SECRET=${'c'.repeat(64)}\n`);
     await writeFile(join(dir, '.rabbitmq-base.yml'), '{"services":{}}');
   }
   const shim = `#!${process.execPath} --
@@ -118,6 +118,9 @@ test('update заменяет обе роли, сохраняет pending соб
   assert.deepEqual(updates.map(c=>c.at(-1)),['max-bot-worker','max-bot']);
   assert(updates.every(c=>c.some(a=>a.endsWith('docker-compose.rabbitmq.yml'))));
   await access(join(r.dir,'.rabbitmq-node-state'));
+  const secrets=await readFile(join(r.dir,'rabbitmq.env'),'utf8');
+  assert(secrets.includes(`BROADCAST_API_SECRET=${'c'.repeat(64)}`));
+  assert.equal(secrets.split('BROADCAST_API_SECRET=').length,2);
 });
 
 test('неудачный update возвращает старый queued-образ обеих ролей, не legacy Node', async t=>{

@@ -3,6 +3,9 @@
 Основной бот снова только Node.js 22. Эксперимент Python удалён обратным
 коммитом; история сохранена. URL MAX и TLS/Nginx остаются прежними.
 
+Текстовые рассылки зарегистрированным пользователям: BROADCAST_DEPLOY.md.
+У них отдельная RabbitMQ-очередь и Bearer secret; helper настраивает его при update.
+
 ```text
 MAX → Nginx:443 → max_bot (ingress) → COMMIT bot_max_events → HTTP200
                                 ↓ relay в worker / publisher confirm

@@ -24,6 +24,12 @@ queued() { docker compose "${base_args[@]}" \
   --env-file "$queue_env" -f "$bot_dir/deploy/docker-compose.rabbitmq.yml" "$@"; }
 # У run нет флага --no-build: используем уже собранный image без pull.
 cli() { queued run --rm --no-deps --pull never --entrypoint node max-bot /app/scripts/events.mjs "$@"; }
+ensure_broadcast_secret() {
+  if ! grep -q '^BROADCAST_API_SECRET=' "$queue_env"; then
+    printf '\nBROADCAST_API_SECRET=%s\n' "$(openssl rand -hex 32)" >> "$queue_env"
+  fi
+  chmod 600 "$queue_env"
+}
 
 if [ "$action" = status ]; then
   [ -f "$queue_env" ] && [ -f "$MAX_BOT_QUEUE_BASE" ] || { echo 'Очередь ещё не настроена.'; exit 1; }
@@ -36,6 +42,7 @@ if [ "$action" = update ]; then
   [ -f "$state_file" ] && [ -f "$queue_env" ] && [ -f "$MAX_BOT_QUEUE_BASE" ] || {
     echo 'Сначала выполните switch.' >&2; exit 1;
   }
+  ensure_broadcast_secret
   queued config --quiet
   previous_queue_image="$(docker inspect -f '{{.Image}}' max_bot)"
   [[ "$previous_queue_image" =~ ^sha256:[a-f0-9]{64}$ ]]
@@ -111,6 +118,7 @@ if [ ! -f "$queue_env" ]; then
     "$queue_password" "$queue_password" "$event_secret" > "$queue_env"
 fi
 chmod 600 "$queue_env"
+ensure_broadcast_secret
 # Полная база для extends worker, без интерполяции и чтения env_file в output.
 base config --no-interpolate --no-env-resolution --format json > "$MAX_BOT_QUEUE_BASE"
 queued config --quiet
