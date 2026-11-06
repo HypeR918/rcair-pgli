@@ -96,7 +96,9 @@ export function createEventStore(pool, { codec, leaseMs = 60000, republishMs = 3
     },
     async claim(id, owner) {
       return transaction(async connection => {
-        const [rows] = await connection.execute('SELECT * FROM bot_max_events WHERE id = ? FOR UPDATE', [id]);
+        const [rows] = await connection.execute(`SELECT *,
+          TIMESTAMPDIFF(MICROSECOND, created_at, NOW(6)) / 1000 AS queue_wait_ms
+          FROM bot_max_events WHERE id = ? FOR UPDATE`, [id]);
         const row = rows[0];
         if (!row || row.state !== 'pending') return null;
         const [due] = await connection.execute('SELECT id FROM bot_max_events WHERE id = ? AND next_attempt_at <= NOW(6)', [id]);
@@ -113,7 +115,8 @@ export function createEventStore(pool, { codec, leaseMs = 60000, republishMs = 3
         await connection.execute(`UPDATE bot_max_events SET state = 'processing', lease_owner = ?,
           lease_until = DATE_ADD(NOW(6), INTERVAL ? MICROSECOND), handler_started_at = NULL,
           attempts = attempts + 1 WHERE id = ?`, [owner, leaseMs * 1000, id]);
-        return { id: String(row.id), update, retrySafe: Boolean(row.retry_safe) };
+        return { id: String(row.id), update, retrySafe: Boolean(row.retry_safe),
+          queueWaitMs: Math.max(0, Math.round(Number(row.queue_wait_ms))) };
       });
     },
     markStarted(id, owner) {

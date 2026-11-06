@@ -18,6 +18,11 @@ export async function startEventWorker(store, rabbit, handle, { logger = console
     active.set(id, state);
     const replies = { attempted: 0, confirmed: 0, failed: 0 };
     const scope = createOperationScope(phase => { state.phase = phase; }, result => { replies[result]++; });
+    const timing = () => {
+      const duration = Math.max(0, Date.now() - state.started);
+      return { queue_wait_ms: claimed.queueWaitMs ?? null, duration_ms: duration,
+        total_ms: Number.isFinite(claimed.queueWaitMs) ? claimed.queueWaitMs + duration : null };
+    };
     let started = false;
     let handled = false;
     const timer = setInterval(() => store.renewLease(id, owner).catch(() => {}), heartbeatMs);
@@ -32,19 +37,20 @@ export async function startEventWorker(store, rabbit, handle, { logger = console
       handled = true;
       const ok = await store.complete(id, owner);
       if (!ok) { const error = new Error('Потеряно владение событием'); error.code = 'EVENT_LEASE_LOST'; throw error; }
-      logger.log('[EVENT_WORKER]', JSON.stringify({ id, state: 'done', duration_ms: Date.now() - state.started, replies }));
+      logger.log('[EVENT_WORKER]', JSON.stringify({ id, type: claimed.update.update_type, state: 'done', ...timing(), replies }));
     } catch (error) {
       if (started) {
         if (claimed.retrySafe && !handled && !scope.ambiguousEffects.length) {
           const result = await store.retrySafe(id, owner, error.code);
-          logger.warn?.('[EVENT_WORKER]', JSON.stringify({ id, state: result, code: 'SAFE_COMMAND_RETRY' }));
+          logger.warn?.('[EVENT_WORKER]', JSON.stringify({ id, type: claimed.update.update_type, state: result,
+            code: 'SAFE_COMMAND_RETRY', ...timing() }));
           return { dead: result !== 'pending' };
         }
         const status = handled || scope.ambiguousEffects.length ? 'uncertain' : 'failed';
         await store.fail(id, owner, error.code, status);
-        logger.error('[EVENT_WORKER]', JSON.stringify({ id, state: status,
+        logger.error('[EVENT_WORKER]', JSON.stringify({ id, type: claimed.update.update_type, state: status,
           code: /^[A-Z0-9_.-]{1,64}$/.test(error.code || '') ? error.code : 'EVENT_HANDLER_FAILED',
-          phase: scope.failedPhase || state.phase, duration_ms: Date.now() - state.started, replies }));
+          phase: scope.failedPhase || state.phase, ...timing(), replies }));
       }
       return { dead: true };
     } finally {

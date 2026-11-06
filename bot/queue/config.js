@@ -9,6 +9,10 @@ export function readQueueConfig(values = process.env) {
   }
   const prefetch = Number(values.EVENT_WORKER_CONCURRENCY || 4);
   if (!Number.isSafeInteger(prefetch) || prefetch < 1 || prefetch > 16) throw new Error('EVENT_WORKER_CONCURRENCY: 1–16');
+  const relayIntervalMs = Number(values.EVENT_RELAY_INTERVAL_MS ?? 200);
+  if (!Number.isSafeInteger(relayIntervalMs) || relayIntervalMs < 100 || relayIntervalMs > 5000) {
+    throw new Error('EVENT_RELAY_INTERVAL_MS: 100–5000 мс');
+  }
   return { role, url: values.RABBITMQ_URL, secret: values.EVENT_PAYLOAD_SECRET, prefetch,
-    queue: values.EVENT_QUEUE_NAME || 'max.webhook.events.v1' };
+    relayIntervalMs, queue: values.EVENT_QUEUE_NAME || 'max.webhook.events.v1' };
 }

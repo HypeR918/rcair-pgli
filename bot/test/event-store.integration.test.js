@@ -21,6 +21,16 @@ async function fixture(t, options = {}) {
   return { store, pool, codec };
 }
 
+test('время очереди считается часами SQL-сервера, без преобразования DATETIME в Node',
+  { skip: !process.env.RCAIR_TEST_DB_PORT }, async t => {
+    const { store, pool } = await fixture(t);
+    const event = await store.accept(message('timed'));
+    await pool.execute('UPDATE bot_max_events SET created_at = DATE_SUB(NOW(6), INTERVAL 2 SECOND) WHERE id = ?', [event.id]);
+    const claimed = await store.claim(event.id, 'worker');
+    assert(Number.isInteger(claimed.queueWaitMs));
+    assert(claimed.queueWaitMs >= 2000 && claimed.queueWaitMs < 10000);
+  });
+
 test('inbox: повтор/порядок пользователя, разные пользователи, очистка DONE и сохранённая дедупликация',
   { skip: !process.env.RCAIR_TEST_DB_PORT }, async t => {
     const { store, pool } = await fixture(t);

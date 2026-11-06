@@ -36,6 +36,7 @@ services:
       BOT_ROLE: worker
       RABBITMQ_URL: ${RABBITMQ_URL:?Запустите deploy/use-rabbitmq.sh}
       EVENT_PAYLOAD_SECRET: ${EVENT_PAYLOAD_SECRET:?Запустите deploy/use-rabbitmq.sh}
+      EVENT_RELAY_INTERVAL_MS: ${EVENT_RELAY_INTERVAL_MS:-200}
     ports: !reset []
     depends_on:
       rabbitmq:
