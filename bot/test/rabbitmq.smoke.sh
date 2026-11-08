@@ -218,3 +218,20 @@ wait_broadcast "$job_id" done 2
 broadcast_status "$job_id"
 [ "$nginx_id" = "$(compose ps -q nginx)" ]
 echo 'Проверено: закрытый broadcast API, snapshot и idempotency, отдельная очередь, диалоги во время зависшей рассылки, crash без автоматического повтора и завершение следующего задания.'
+create_test() {
+  compose exec -T max-bot node --input-type=module -e '
+    const r=await fetch("http://127.0.0.1:3000/internal/broadcasts/test",{method:"POST",
+      headers:{"Authorization":`Bearer ${process.env.BROADCAST_API_SECRET}`,"Content-Type":"application/json","Idempotency-Key":"smoke-single-test-01"},
+      body:JSON.stringify({text:"Проба fixture",max_id:"701"})});
+    if(r.status!==202)throw new Error(`test HTTP ${r.status}`);
+    console.log(JSON.stringify(await r.json()));'
+}
+probe="$(create_test)"
+job_id="$(python3 -c 'import json,sys; print(json.loads(sys.argv[1])["id"])' "$probe")"
+wait_broadcast "$job_id" done 1
+broadcast_status "$job_id" | python3 -c 'import json,sys; d=json.load(sys.stdin); assert d["total"]==1 and d["audience"]=="test"'
+create_test | python3 -c 'import json,sys; assert json.load(sys.stdin)["created"] is False'
+compose exec -T max-bot node --input-type=module -e '
+  const d=await(await fetch("https://platform-api2.max.ru/stats")).json();
+  if(d.broadcast_users.length!==5||d.broadcast_users.at(-1)!=="701")throw new Error("single test audience");'
+echo 'Проверено: проба проходит через тот же SQL/Rabbit consumer, выбирает ровно одного адресата и не повторяет отправку по тому же ключу.'

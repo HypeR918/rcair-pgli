@@ -6,7 +6,7 @@ import { createEventCodec } from '../queue/eventCodec.js';
 import { createBroadcastStore } from '../broadcast/store.js';
 
 const skip = !process.env.RCAIR_TEST_DB_PORT;
-async function fixture(t) {
+async function fixture(t, { legacy = false } = {}) {
   const config = { host: '127.0.0.1', port: Number(process.env.RCAIR_TEST_DB_PORT), user: 'root' };
   const admin = await mysql.createConnection(config);
   const database = `rcair_broadcast_${process.pid}_${Date.now()}_${Math.floor(Math.random() * 100000)}`;
@@ -17,7 +17,17 @@ async function fixture(t) {
   await pool.execute('CREATE TABLE blocked_max_ids (max_id BIGINT PRIMARY KEY)');
   await pool.execute('INSERT INTO bot_users VALUES (11,1,0),(12,2,0),(13,3,1),(14,4,0),(15,NULL,0),(16,0,0)');
   await pool.execute('INSERT INTO blocked_max_ids VALUES (14)');
-  const store = createBroadcastStore(pool, createEventCodec('a'.repeat(64)));
+  const codec = createEventCodec('a'.repeat(64));
+  if (legacy) {
+    await pool.execute(`CREATE TABLE bot_broadcast_jobs (id BIGINT UNSIGNED AUTO_INCREMENT PRIMARY KEY,
+      request_key BINARY(32) UNIQUE, request_hash BINARY(32), payload MEDIUMBLOB,
+      created_at DATETIME(6) DEFAULT CURRENT_TIMESTAMP(6)) ENGINE=InnoDB`);
+    const key = codec.identify({ update_type: 'broadcast_key', key: 'legacy-notice-01' }).eventKey;
+    const hash = codec.identify({ update_type: 'broadcast_text', text: 'Legacy текст' }).eventKey;
+    await pool.execute('INSERT INTO bot_broadcast_jobs (request_key,request_hash,payload) VALUES (?,?,?)',
+      [key, hash, codec.encode({ text: 'Legacy текст' }, key)]);
+  }
+  const store = createBroadcastStore(pool, codec);
   await store.ensureSchema(); await store.ensureSchema();
   return { store, pool };
 }
@@ -91,4 +101,32 @@ test('сбой snapshot откатывает задание целиком', { s
   await assert.rejects(store.create('notice-004', 'Текст'));
   const [rows] = await pool.execute('SELECT COUNT(*) AS amount FROM bot_broadcast_jobs');
   assert.equal(Number(rows[0].amount), 0);
+});
+
+test('пробная рассылка выбирает только указанный MAX ID; scope включён в идемпотентность', { skip }, async t => {
+  const { store, pool } = await fixture(t);
+  const job = await store.create('single-test-01', 'Проба', { audience: 'test', maxId: '12' });
+  const status = await store.status(job.id);
+  assert.equal(status.total, 1); assert.equal(status.audience, 'test');
+  const [event] = await store.publishable();
+  assert.equal((await store.claim(event.id, 'worker')).update.user.user_id, '12');
+  assert.equal((await store.create('single-test-01', 'Проба', { audience: 'test', maxId: 12 })).created, false);
+  await assert.rejects(store.create('single-test-01', 'Проба'), error => error.code === 'BROADCAST_KEY_CONFLICT');
+  await assert.rejects(store.create('single-test-01', 'Проба', { audience: 'test', maxId: '11' }), error => error.code === 'BROADCAST_KEY_CONFLICT');
+  for (const maxId of ['13', '14', '15', '99']) {
+    await assert.rejects(store.create(`no-recipient-${maxId}`, 'Проба', { audience: 'test', maxId }),
+      error => error.code === 'BROADCAST_RECIPIENT_NOT_FOUND');
+  }
+  await assert.rejects(store.create('missing-id-01', 'Проба', { audience: 'test' }), error => error.code === 'BROADCAST_INVALID_RECIPIENT');
+  const [jobs] = await pool.execute('SELECT COUNT(*) AS amount FROM bot_broadcast_jobs');
+  assert.equal(Number(jobs[0].amount), 1, 'Невалидные тесты не создают заданий');
+});
+
+test('обновление старой схемы сохраняет idempotency и аудиторию прежних рассылок', { skip }, async t => {
+  const { store } = await fixture(t, { legacy: true });
+  const old = await store.create('legacy-notice-01', 'Legacy текст');
+  assert.equal(old.created, false);
+  assert.equal((await store.status(old.id)).audience, 'all');
+  await assert.rejects(store.create('legacy-notice-01', 'Legacy текст', { audience: 'test', maxId: '12' }),
+    error => error.code === 'BROADCAST_KEY_CONFLICT');
 });

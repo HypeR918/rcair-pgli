@@ -23,7 +23,7 @@ https.createServer({ key: readFileSync('/fixtures/privkey.pem'), cert: readFileS
   if (path === '/messages') {
     messages++;
     const body = JSON.parse(Buffer.concat(chunks));
-    const broadcast = body.text === 'Рассылка fixture';
+    const broadcast = ['Рассылка fixture', 'Проба fixture'].includes(body.text);
     if (broadcast) broadcastUsers.push(new URL(req.url, 'https://fixture').searchParams.get('user_id'));
     if (mode === 'hold' || mode === 'hold-broadcast' && broadcast) return;
     return res.end(JSON.stringify({ message: { body: { mid: `reply.${messages}`, text: 'Тестовый ответ' } } }));

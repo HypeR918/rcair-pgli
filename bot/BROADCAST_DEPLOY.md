@@ -11,11 +11,25 @@ prefetch=1, до двух отправок в секунду. Очередь д�
 (
 set -euo pipefail
 cd /opt/max-bot/rcair-pgli
-git switch feat/glpi-max-webhook
-git pull --ff-only origin feat/glpi-max-webhook
-sudo bash bot/deploy/use-rabbitmq.sh update
+git fetch origin feat/glpi-max-webhook
+GLPI_RELEASE_SHA="$(git rev-parse FETCH_HEAD)"
+GLPI_RELEASE_DIR="$HOME/glpi-releases/$GLPI_RELEASE_SHA"
+mkdir -p "$HOME/glpi-releases"
+if [ ! -e "$GLPI_RELEASE_DIR" ]; then
+  git worktree add --detach "$GLPI_RELEASE_DIR" "$GLPI_RELEASE_SHA"
+fi
+test "$(git -C "$GLPI_RELEASE_DIR" rev-parse HEAD)" = "$GLPI_RELEASE_SHA"
+git -C "$GLPI_RELEASE_DIR" diff --quiet
+git -C "$GLPI_RELEASE_DIR" diff --cached --quiet
+sudo bash "$GLPI_RELEASE_DIR/bot/deploy/use-rabbitmq.sh" update
 )
 ```
+
+Отдельный worktree содержит чистую версию кода для сборки. Исходный checkout и
+исправленный bind-конфиг Nginx в /opt/max-bot/rcair-pgli остаются на месте;
+helper обновляет только Node-роли и не пересоздаёт Nginx. Сохраните worktree:
+Compose-контейнеры ссылаются на его deploy-файлы. Для следующего обновления
+повторите блок — новый SHA получит отдельный каталог.
 
 Helper добавляет отдельный BROADCAST_API_SECRET в /opt/max-bot/rabbitmq.env,
 сохраняет существующий ключ при обновлениях и права 0600. Исходный .env не
@@ -28,6 +42,43 @@ API доступен на HTTP-порту ingress (в нашей конфигу�
 доступе используйте SSH-туннель и отдельный Bearer secret. BOT_TOKEN и секрет
 подписки MAX для авторизации этого API не подходят.
 
+## Проба одному получателю
+
+POST /internal/broadcasts/test принимает text и обязательный max_id. ID должен
+принадлежать зарегистрированному незаблокированному пользователю. Проверка
+проходит через тот же журнал, RabbitMQ consumer и лимит отправки. При неверном
+ID возвращается 400, при отсутствии подходящего пользователя — 404, без
+создания задания. Проба никогда не переключается на отправку всем.
+
+Для проверки наличия установленной функции, без вывода секретов:
+
+```bash
+sudo docker exec max_bot sh -c 'test -f /app/broadcast/api.js && grep -q /internal/broadcasts/test /app/broadcast/api.js && test -n "$BROADCAST_API_SECRET"' && echo 'Пробная рассылка установлена'
+```
+
+Замените ВАШ_MAX_ID на свой числовой ID, затем выполните:
+
+```bash
+sudo docker exec -i max_bot sh -c '
+curl --fail-with-body --silent --show-error \
+  --connect-timeout 5 --max-time 20 \
+  -X POST "http://127.0.0.1:${PORT:-3000}/internal/broadcasts/test" \
+  -H "Authorization: Bearer $BROADCAST_API_SECRET" \
+  -H "Content-Type: application/json" \
+  -H "Idempotency-Key: broadcast-self-test-01" \
+  --data-binary @-
+' <<'JSON'
+{"text":"Проверка рассылки GLPI: сообщение только тестовому получателю.","max_id":"ВАШ_MAX_ID"}
+JSON
+```
+
+Ответ HTTP202 содержит audience=test и ID задания. GET статуса ниже должен
+показать audience=test, total=1, затем counts.done=1. Это подтверждение API MAX;
+появление сообщения в своём чате проверяет получатель. Для новой пробы меняйте
+Idempotency-Key. Ключ учитывает текст, режим all/test и тестового получателя:
+его нельзя использовать для другой аудитории. Обычные ранее созданные ключи
+рассылок сохраняют совместимость после обновления.
+
 ## Получатели
 
 На момент создания фиксируется список bot_users с max_id > 0 и glpi_user_id > 0.
@@ -38,8 +89,9 @@ API доступен на HTTP-порту ingress (в нашей конфигу�
 отклонить сообщение, например если пользователь заблокировал бота.
 
 Добавившиеся после создания задания пользователи в него не включаются.
-Текст — обычный, непустой, до 4000 Unicode-символов; кнопок, HTML-форматирования,
-вложений и выбора отдельных адресатов в первой версии нет.
+Текст — обычный, непустой, до 4000 Unicode-символов; кнопок, HTML-форматирования
+и вложений в первой версии нет. Один MAX ID можно указать только в отдельной
+пробе; обычная рассылка адресуется всем подходящим пользователям.
 
 ## Создание рассылки curl
 
@@ -88,7 +140,8 @@ sudo docker exec max_bot node scripts/broadcasts.mjs status 1
 sudo docker logs --since 5m --tail 80 max_bot_worker
 ```
 
-total — число адресатов snapshot; counts — pending, processing, done, failed,
+audience — all для массового задания или test для пробы. total — число адресатов
+snapshot; counts — pending, processing, done, failed,
 uncertain, skipped. done означает подтверждение отправки API MAX, не прочтение.
 skipped означает отмену отправки (например блокировку после создания задания).
 problems содержит ID отправок и безопасные коды ошибок. Статус задания running

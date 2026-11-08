@@ -33,7 +33,7 @@ test('API принимает только текст с idempotency key; в от
   assert.equal(response.status, 202);
   assert.deepEqual(await response.json(), { id: '7', created: true, status_url: '/internal/broadcasts/7' });
   assert.deepEqual(calls, [['notice-test-01', text]]);
-  for (const body of [{ text: '' }, { text: 'x'.repeat(4001) }, { text: 'hello', user_id: 1 }, []]) {
+  for (const body of [{ text: '' }, { text: 'x'.repeat(4001) }, { text: 'hello', user_id: 1 }, { text: 'hello', max_id: '12' }, []]) {
     assert.equal((await fetch(url, { method: 'POST', headers, body: JSON.stringify(body) })).status, 400);
   }
   assert.equal((await fetch(url, { method: 'POST', headers: { ...headers, 'Idempotency-Key': '' }, body: '{"text":"x"}' })).status, 400);
@@ -54,4 +54,20 @@ test('API возвращает статус и безопасные ошибки
   assert.equal((await fetch(`${url}/8`, { headers })).status, 404);
   assert.equal((await fetch(url, { headers })).status, 405);
   assert.equal((await fetch(`${url}/0`, { headers })).status, 404);
+});
+
+test('test endpoint всегда выбирает ровно одного явно заданного получателя', async t => {
+  const calls = [];
+  const { url, headers } = await fixture(t, { create: async (...args) => {
+    calls.push(args); return { id: '8', created: true };
+  } });
+  const response = await fetch(`${url}/test`, { method: 'POST', headers, body: JSON.stringify({ text: 'Проба', max_id: 12 }) });
+  assert.equal(response.status, 202);
+  assert.equal((await response.json()).audience, 'test');
+  assert.deepEqual(calls, [['notice-test-01', 'Проба', { audience: 'test', maxId: '12' }]]);
+  for (const max_id of [undefined, '', 0, -1, true, '12 OR 1', '9223372036854775808', Number.MAX_SAFE_INTEGER + 1]) {
+    assert.equal((await fetch(`${url}/test`, { method: 'POST', headers, body: JSON.stringify({ text: 'Проба', max_id }) })).status, 400);
+  }
+  assert.equal(calls.length, 1, 'Неверный MAX ID не превращает тест в рассылку всем');
+  assert.equal((await fetch(`${url}/test`, { method: 'POST', body: '{}' })).status, 401);
 });

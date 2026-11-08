@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { normalizeTestRecipient } from './validation.js';
 
 function reply(res, status, body) {
   res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8', 'Cache-Control': 'no-store' });
@@ -9,7 +10,8 @@ export function createBroadcastApi(store, secret = '') {
   if (secret && !/^[A-Za-z0-9_-]{32,256}$/.test(secret)) throw new Error('Некорректный BROADCAST_API_SECRET');
   return async (req, res) => {
     const path = req.url.split('?')[0];
-    const isCreate = path === '/internal/broadcasts';
+    const isTest = path === '/internal/broadcasts/test';
+    const isCreate = path === '/internal/broadcasts' || isTest;
     const match = /^\/internal\/broadcasts\/([1-9][0-9]{0,19})$/.exec(path);
     if (!isCreate && !match) return false;
     if (!secret) { req.resume(); reply(res, 404, { ok: false }); return true; }
@@ -42,16 +44,20 @@ export function createBroadcastApi(store, secret = '') {
       }
       let body;
       try { body = JSON.parse(Buffer.concat(chunks)); } catch { reply(res, 400, { ok: false, code: 'INVALID_JSON' }); return true; }
-      if (!body || Array.isArray(body) || Object.keys(body).some(key => key !== 'text')
+      const allowed = isTest ? ['text', 'max_id'] : ['text'];
+      if (!body || Array.isArray(body) || Object.keys(body).some(key => !allowed.includes(key))
           || typeof body.text !== 'string' || !body.text.trim() || [...body.text].length > 4000) {
         reply(res, 400, { ok: false, code: 'INVALID_TEXT' }); return true;
       }
-      const job = await store.create(key, body.text);
-      reply(res, 202, { ...job, status_url: `/internal/broadcasts/${job.id}` });
+      const job = isTest
+        ? await store.create(key, body.text, { audience: 'test', maxId: normalizeTestRecipient(body.max_id) })
+        : await store.create(key, body.text);
+      reply(res, 202, { ...job, ...(isTest && { audience: 'test' }), status_url: `/internal/broadcasts/${job.id}` });
     } catch (error) {
       req.resume();
-      reply(res, error.code === 'BROADCAST_KEY_CONFLICT' ? 409 : 503,
-        { ok: false, code: error.code === 'BROADCAST_KEY_CONFLICT' ? error.code : 'BROADCAST_UNAVAILABLE' });
+      const statuses = { BROADCAST_KEY_CONFLICT: 409, BROADCAST_INVALID_RECIPIENT: 400, BROADCAST_RECIPIENT_NOT_FOUND: 404 };
+      reply(res, Object.hasOwn(statuses, error.code) ? statuses[error.code] : 503,
+        { ok: false, code: Object.hasOwn(statuses, error.code) ? error.code : 'BROADCAST_UNAVAILABLE' });
     }
     return true;
   };

@@ -1,4 +1,5 @@
 import { timingSafeEqual } from 'node:crypto';
+import { normalizeTestRecipient } from './validation.js';
 
 const states = ['pending', 'processing', 'done', 'failed', 'uncertain', 'skipped'];
 const eligible = `u.max_id > 0 AND u.glpi_user_id > 0 AND COALESCE(u.is_blocked, 0) = 0
@@ -28,9 +29,11 @@ export function createBroadcastStore(pool, codec) {
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         request_key BINARY(32) NOT NULL UNIQUE,
         request_hash BINARY(32) NOT NULL,
+        audience VARCHAR(8) NOT NULL DEFAULT 'all',
         payload MEDIUMBLOB NULL,
         created_at DATETIME(6) NOT NULL DEFAULT CURRENT_TIMESTAMP(6)
       ) ENGINE=InnoDB`);
+      await pool.execute("ALTER TABLE bot_broadcast_jobs ADD COLUMN IF NOT EXISTS audience VARCHAR(8) NOT NULL DEFAULT 'all'");
       await pool.execute(`CREATE TABLE IF NOT EXISTS bot_broadcast_deliveries (
         id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
         job_id BIGINT UNSIGNED NOT NULL,
@@ -50,15 +53,22 @@ export function createBroadcastStore(pool, codec) {
         INDEX idx_broadcast_job (job_id, state)
       ) ENGINE=InnoDB`);
     },
-    async create(key, text) {
+    async create(key, text, { audience = 'all', maxId } = {}) {
+      if (!['all', 'test'].includes(audience) || audience === 'all' && maxId != null) {
+        const error = new Error('Некорректный получатель'); error.code = 'BROADCAST_INVALID_RECIPIENT'; throw error;
+      }
+      const target = audience === 'test' ? normalizeTestRecipient(maxId) : null;
       const requestKey = codec.identify({ update_type: 'broadcast_key', key }).eventKey;
-      const requestHash = codec.identify({ update_type: 'broadcast_text', text }).eventKey;
+      // Хэш обычной рассылки сохраняет совместимость с уже созданными заданиями.
+      const requestHash = codec.identify(target
+        ? { update_type: 'broadcast_test_text', text, max_id: target }
+        : { update_type: 'broadcast_text', text }).eventKey;
       return transaction(async connection => {
         let result;
         try {
           [result] = await connection.execute(`INSERT INTO bot_broadcast_jobs
-            (request_key, request_hash, payload) VALUES (?, ?, ?)`,
-          [requestKey, requestHash, codec.encode({ text }, requestKey)]);
+            (request_key, request_hash, payload, audience) VALUES (?, ?, ?, ?)`,
+          [requestKey, requestHash, codec.encode({ text }, requestKey), audience]);
         } catch (error) {
           if (error.code !== 'ER_DUP_ENTRY') throw error;
           const [rows] = await connection.execute(
@@ -70,13 +80,18 @@ export function createBroadcastStore(pool, codec) {
           return { id: String(rows[0].id), created: false };
         }
         const id = String(result.insertId);
-        await connection.execute(`INSERT INTO bot_broadcast_deliveries (job_id, max_id)
-          SELECT ?, u.max_id FROM bot_users u WHERE ${eligible}`, [id]);
+        const [recipients] = await connection.execute(`INSERT INTO bot_broadcast_deliveries (job_id, max_id)
+          SELECT ?, u.max_id FROM bot_users u WHERE ${eligible}${target ? ' AND u.max_id = ?' : ''}`,
+        target ? [id, target] : [id]);
+        if (target && recipients.affectedRows !== 1) {
+          const error = new Error('Тестовый получатель не зарегистрирован или заблокирован');
+          error.code = 'BROADCAST_RECIPIENT_NOT_FOUND'; throw error;
+        }
         return { id, created: true };
       });
     },
     async status(id) {
-      const [jobs] = await pool.execute('SELECT id, created_at FROM bot_broadcast_jobs WHERE id = ?', [id]);
+      const [jobs] = await pool.execute('SELECT id, created_at, audience FROM bot_broadcast_jobs WHERE id = ?', [id]);
       if (!jobs.length) return null;
       const [rows] = await pool.execute('SELECT state, COUNT(*) AS amount FROM bot_broadcast_deliveries WHERE job_id = ? GROUP BY state', [id]);
       const counts = Object.fromEntries(states.map(state => [state, 0]));
@@ -84,7 +99,7 @@ export function createBroadcastStore(pool, codec) {
       const total = Object.values(counts).reduce((a, b) => a + b, 0);
       const [problems] = await pool.execute(`SELECT id, state, attempts, last_error_code
         FROM bot_broadcast_deliveries WHERE job_id = ? AND state IN ('failed', 'uncertain') ORDER BY id LIMIT 20`, [id]);
-      return { id: String(jobs[0].id), created_at: jobs[0].created_at, total, counts,
+      return { id: String(jobs[0].id), created_at: jobs[0].created_at, audience: jobs[0].audience, total, counts,
         status: counts.pending || counts.processing ? 'running'
           : counts.failed || counts.uncertain ? 'completed_with_errors' : 'completed',
         problems: problems.map(row => ({ ...row, id: String(row.id) })) };

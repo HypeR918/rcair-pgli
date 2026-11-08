@@ -115,6 +115,8 @@ CLI `node scripts/events.mjs status` не загружает .env и не выв
 BROADCAST_API_SECRET и не проксируется публичным Nginx. Команды и ограничения —
 BROADCAST_DEPLOY.md. `events.mjs assert-drained` учитывает также рассылки;
 проблемные отправки разрешаются через scripts/broadcasts.mjs.
+Проба: POST /internal/broadcasts/test с text и max_id выбирает ровно одного
+зарегистрированного незаблокированного адресата; без подходящего ID — 400/404.
 Обычные сбои /start,/menu,bot_started допускают до 5 повторов; неизвестные записи
 GLPI и прерванные STARTED не повторяются автоматически (FAILED/UNCERTAIN).
 
