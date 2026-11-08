@@ -49,6 +49,10 @@ async function readUpdate(req) {
 
 export async function startMaxTransport(bot, config, options = {}) {
   const transport = validateTransportConfig(config);
+  const paths = new Set([transport.path]);
+  if (transport.path !== '/') {
+    paths.add(transport.path.endsWith('/') ? transport.path.slice(0, -1) : `${transport.path}/`);
+  }
   const api = options.api || createMaxApi(config.BOT_TOKEN);
   const logger = options.logger || console;
   const onFatal = options.onFatal || (error => {
@@ -83,7 +87,7 @@ export async function startMaxTransport(bot, config, options = {}) {
       return;
     }
     if (options.adminApi && await options.adminApi(req, res)) return;
-    if (path !== transport.path) {
+    if (!paths.has(path)) {
       req.resume();
       reply(res, 404, { ok: false });
       return;

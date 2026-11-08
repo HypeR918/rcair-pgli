@@ -4,6 +4,7 @@
 tmp/
 logs/
 *.log
+*.bak-callback.*
 .DS_Store
 .idea/
 .vscode/

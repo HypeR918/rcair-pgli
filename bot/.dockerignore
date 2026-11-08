@@ -6,6 +6,7 @@ npm-debug.log
 .env.*
 tmp/uploads
 *.log
+*.bak-callback.*
 deploy.log
 Dockerfile
 .dockerignore

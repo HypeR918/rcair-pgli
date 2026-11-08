@@ -26,7 +26,7 @@ function payload(id = 'offline.mid', userId = 123) {
   };
 }
 
-async function fixture(t, setup = () => {}, transportLogger = logger) {
+async function fixture(t, setup = () => {}, transportLogger = logger, overrides = {}) {
   const calls = [];
   const bot = createWebhookBot(config.BOT_TOKEN);
   bot.use(serializeUserUpdates);
@@ -37,7 +37,7 @@ async function fixture(t, setup = () => {}, transportLogger = logger) {
     if (method === 'GET') return { subscriptions: [] };
     return { success: true };
   };
-  const transport = await startMaxTransport(bot, config, { api, logger: transportLogger, host: '127.0.0.1', port: 0 });
+  const transport = await startMaxTransport(bot, { ...config, ...overrides }, { api, logger: transportLogger, host: '127.0.0.1', port: 0 });
   t.after(() => transport.stop());
   const base = `http://127.0.0.1:${transport.server.address().port}`;
   const deliver = (update = payload(), extra = {}) => fetch(`${base}/max/callback/`, {
@@ -94,6 +94,29 @@ test('секрет проверяется до обработки; неверн�
   assert.equal(get.headers.get('allow'), 'POST');
   assert.equal((await fetch(`${f.base}/wrong`)).status, 404);
 });
+
+for (const suffix of ['', '/']) {
+  test(`POST кнопки принимается с обоими вариантами slash при WEBHOOK_URL /max/callback${suffix}`, async t => {
+    let handled = 0;
+    const f = await fixture(t, bot => bot.action('menu:help', () => { handled++; }), logger,
+      { WEBHOOK_URL: `https://bot-support.gov70.ru/max/callback${suffix}` });
+    for (const path of ['/max/callback', '/max/callback/']) {
+      const response = await fetch(`${f.base}${path}`, { method: 'POST', redirect: 'manual',
+        headers: { 'Content-Type': 'application/json', 'X-Max-Bot-Api-Secret': config.WEBHOOK_SECRET },
+        body: JSON.stringify({ update_type: 'message_callback', timestamp: 1,
+          callback: { callback_id: `click${path}`, payload: 'menu:help', user: { user_id: 123 } } }),
+      });
+      assert.equal(response.status, 200);
+      assert.equal(response.headers.get('location'), null);
+      assert.equal((await fetch(`${f.base}${path}`)).status, 405);
+      const unauthorized = await fetch(`${f.base}${path}`, { method: 'POST', body: '{}' });
+      assert.equal(unauthorized.status, 403);
+    }
+    assert.equal(handled, 2);
+    assert.equal((await fetch(`${f.base}/max/callback/other`)).status, 404);
+    assert.equal((await fetch(`${f.base}/max/callback//`)).status, 404);
+  });
+}
 
 test('реальные SDK Context/command/action/on получают сообщение, callback и bot_started', async t => {
   const events = [];

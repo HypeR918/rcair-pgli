@@ -4,7 +4,54 @@
 [RABBITMQ_DEPLOY.md](RABBITMQ_DEPLOY.md). Ниже сохранены прежние инструкции
 для синхронного Node и Nginx; обновлять только max_bot после миграции нельзя.
 
-Публичный адрес: **https://botsupport.gov70.ru/max/callback/**.
+Публичный URL берётся из WEBHOOK_URL. В актуальных логах сервера домен
+**bot-support.gov70.ru** (с дефисом); прежний **botsupport.gov70.ru** остаётся
+в примерах. При настройке сверяйте домен в подписке MAX, Nginx и WEBHOOK_URL.
+
+## POST /max/callback получает 301, затем GET получает 403
+
+Prefix location `/max/callback/` в Nginx может автоматически отправлять 301
+для `/max/callback`. При следовании такому редиректу клиент может заменить
+POST на GET и потерять JSON события. В логах это видно как POST301 без upstream,
+затем GET403; счётчик message_callback в Node при этом не растёт.
+
+Исправление — внутренний переход к тому же обработчику, без HTTP-редиректа:
+
+```nginx
+location = /max/callback {
+    rewrite ^ /max/callback/ last;
+}
+```
+
+Существующий location `/max/callback/` с proxy_pass сохраняется. Оба шаблона
+Nginx содержат этот маршрут; Node тоже принимает один необязательный конечный
+slash. POST-only и проверка X-Max-Bot-Api-Secret действуют в обоих вариантах.
+
+Быстро применить к действующему bind-конфигу, сохранив местные правки домена,
+сертификатов и не меняя checkout репозитория:
+
+```bash
+(
+set -euo pipefail
+cd /opt/max-bot/rcair-pgli
+git fetch origin feat/glpi-max-webhook
+GLPI_FIX_SCRIPT="$(mktemp /tmp/glpi-callback-fix.XXXXXX)"
+trap 'rm -f "$GLPI_FIX_SCRIPT"' EXIT
+git show FETCH_HEAD:bot/deploy/fix-callback-path.sh > "$GLPI_FIX_SCRIPT"
+sudo bash "$GLPI_FIX_SCRIPT"
+)
+```
+
+Helper находит именно файл, подключённый к /etc/nginx/conf.d/default.conf в
+max_bot_nginx, создаёт уникальную backup, записывает правку в тот же inode,
+проверяет nginx -t и делает reload. При неудачной проверке возвращает исходный
+файл. Бот и БД продолжают работать; изменения подписки MAX не требуются.
+Произвольный уже существующий bare location helper не перезаписывает. Если
+bind-файл на хосте отличается от файла в контейнере, останавливается до правки:
+сначала нужно разобраться, какой конфиг фактически подключён.
+
+После применения отправьте /start и нажмите «Справка» на новом меню. Ожидаются
+POST200/upstream=200 без промежуточного 301 и новое событие message_callback.
 
 ```text
 MAX → botsupport.gov70.ru:443 → Nginx (TLS) → Node.js:3000 → существующие обработчики → GLPI
