@@ -556,7 +556,13 @@ export async function handleTicketTextState(ctx, session, text) {
       draftFiles.push(...incomingFiles);
       session.ticketDraft.files = draftFiles;
 
-      await setSession(maxUserId, session);
+      try {
+        await setSession(maxUserId, session);
+      } catch (error) {
+        // Эти файлы ещё не принадлежат сохранённому черновику.
+        await cleanupDownloadedFiles(incomingFiles);
+        throw error;
+      }
 
       await ctx.reply(`Файл добавлен к заявке\nВсего вложений: ${draftFiles.length}`, {
         attachments: [ticketFilesKeyboard(draftFiles.length)],

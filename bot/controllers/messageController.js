@@ -71,10 +71,11 @@ export function registerMessageHandler(bot) {
     } catch (error) {
       console.error('message_created error:', error.message);
 
-      if (
-        session.state === State.WAIT_NEW_TICKET_FILES ||
-        session.state === State.WAIT_TICKET_COMMENT
-      ) {
+      if (session.state === State.WAIT_NEW_TICKET_FILES) {
+        // Ошибка одного вложения не отменяет заявку. Сохранённая сессия содержит
+        // либо прежний черновик, либо уже добавленные файлы, если не прошёл ответ MAX.
+        await ctx.reply('Не удалось обработать вложение или подтвердить его добавление. Черновик и ранее добавленные файлы сохранены. Попробуйте отправить файл ещё раз или проверьте вложения перед созданием заявки.');
+      } else if (session.state === State.WAIT_TICKET_COMMENT) {
         await cleanupDownloadedFiles(session.ticketDraft?.files || []);
         await setSession(maxUserId, { state: State.IDLE });
         await ctx.reply('Произошла ошибка при обработке файла. Попробуйте отправить другой файл или вернитесь в меню.');
