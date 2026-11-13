@@ -14,7 +14,7 @@ import * as db from '../services/dbService.js';
 import * as glpi from '../services/glpiService.js';
 
 const stub = module => Object.fromEntries(Object.keys(module).map(name => [name, noop]));
-const image = { type: 'image', payload: { photo_id: 42, url: 'https://fd.oneme.ru/photo', token: 'photo-token' } };
+const image = { type: 'image', payload: { photo_id: 42, url: 'https://i.oneme.ru/photo', token: 'photo-token' } };
 const archive = { type: 'file', filename: 'logs.zip', size: 7,
   payload: { url: 'https://fd.oneme.ru/archive', token: 'file-token' } };
 
@@ -127,7 +127,7 @@ test('похожие домены хранилища отклоняются до
   const f = await fixture(t);
   await f.message([image]);
   const before = f.getSession();
-  for (const hostname of ['fd.oneme.ru.evil.test', 'evil-fd.oneme.ru', 'untrusted.oneme.ru']) {
+  for (const hostname of ['fd.oneme.ru.evil.test', 'evil-fd.oneme.ru', 'i.oneme.ru.evil.test', 'evil-i.oneme.ru', 'untrusted.oneme.ru']) {
     await f.message([{ ...archive, payload: { url: `https://${hostname}/archive` } }]);
     assert.deepEqual(f.getSession(), before);
     assert.equal(await readFile(before.ticketDraft.files[0].path, 'utf8'), 'fixture');

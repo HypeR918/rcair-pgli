@@ -19,8 +19,8 @@ const MAX_ATTACHMENT_BYTES = limit('MAX_ATTACHMENT_BYTES', 20 * 1024 * 1024);
 const MAX_DRAFT_FILES = limit('MAX_DRAFT_FILES', 10);
 const MAX_DRAFT_BYTES = limit('MAX_DRAFT_BYTES', 50 * 1024 * 1024);
 const UPLOAD_TTL_MS = limit('UPLOAD_TTL_MS', 24 * 60 * 60 * 1000);
-// MAX выдаёт ссылки на файлы также через fd.oneme.ru; токен бота этому CDN не нужен.
-const allowedHosts = (process.env.MAX_ATTACHMENT_ALLOWED_HOSTS || '.max.ru,fd.oneme.ru')
+// MAX выдаёт изображения через i.oneme.ru, файлы — через fd.oneme.ru; CDN не нужен токен бота.
+const allowedHosts = (process.env.MAX_ATTACHMENT_ALLOWED_HOSTS || '.max.ru,fd.oneme.ru,i.oneme.ru')
   .split(',').map(value => value.trim().toLowerCase()).filter(Boolean);
 const tokenHosts = new Set(['platform-api2.max.ru', 'platform-api.max.ru', 'api.max.ru']);
 const downloadAgent = new https.Agent({ lookup: publicLookup });
